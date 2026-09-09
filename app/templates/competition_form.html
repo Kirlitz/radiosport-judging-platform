@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>{% if comp %}Редактирование{% else %}Создание{% endif %} соревнования</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 20px auto; padding: 0 15px; line-height: 1.4; color: #333; }
+        .top-nav { margin-bottom: 15px; }
+        .top-nav a { color: #007bff; text-decoration: none; font-weight: bold; font-size: 14px; }
+        
+        .card { background: #f8f9fa; padding: 20px; border-radius: 6px; border: 1px solid #e9ecef; }
+        .card h2 { margin-top: 0; margin-bottom: 15px; font-size: 20px; color: #212529; }
+        
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 4px; font-weight: bold; font-size: 13px; color: #495057; }
+        input[type="text"], input[type="datetime-local"], input[type="number"] { width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ced4da; border-radius: 4px; font-size: 13px; }
+        
+        /* Сетка для дат и параметров в один ряд */
+        .grid-dates { display: grid; grid-template-columns: 1fr 1fr 1fr 120px; gap: 10px; margin-bottom: 15px; }
+        @media (max-width: 768px) {
+            .grid-dates { grid-template-columns: 1fr 1fr; }
+        }
+
+        button, .btn { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; text-decoration: none; display: inline-block; font-size: 13px; }
+        .btn-primary { background: #007bff; color: white; }
+        .btn-primary:hover { background: #0069d9; }
+        .btn-secondary { background: #6c757d; color: white; }
+        .btn-danger { background: #dc3545; color: white; }
+        
+        .category-row { display: flex; gap: 6px; margin-bottom: 6px; align-items: center; }
+        .category-row input { flex: 1; }
+        
+        .form-actions { display: flex; gap: 10px; margin-top: 20px; border-top: 1px solid #dee2e6; padding-top: 15px; }
+    </style>
+</head>
+<body>
+
+    <div class="top-nav">
+        <a href="/admin">← Назад к списку соревнований</a>
+    </div>
+
+    <div class="card">
+        <h2>{% if comp %}Редактирование соревнований: {{ comp.name }}{% else %}Создание нового соревнования{% endif %}</h2>
+        
+        <form action="{% if comp %}/admin/edit/{{ comp.id }}{% else %}/admin/add{% endif %}" method="POST">
+            <div class="form-group">
+                <label>Название соревнований:</label>
+                <input type="text" name="name" value="{{ comp.name if comp else '' }}" required placeholder="Например: Чемпионат Приморского края">
+            </div>
+
+            <!-- Блок дат и параметров в один ряд -->
+            <div class="grid-dates">
+                <div>
+                    <label>Начало:</label>
+                    <input type="datetime-local" name="start_time" value="{{ comp.start_time.strftime('%Y-%m-%dT%H:%M') if comp and comp.start_time else '' }}" required>
+                </div>
+                <div>
+                    <label>Окончание:</label>
+                    <input type="datetime-local" name="end_time" value="{{ comp.end_time.strftime('%Y-%m-%dT%H:%M') if comp and comp.end_time else '' }}" required>
+                </div>
+                <div>
+                    <label>Дедлайн отчетов:</label>
+                    <input type="datetime-local" name="deadline_time" value="{{ comp.deadline_time.strftime('%Y-%m-%dT%H:%M') if comp and comp.deadline_time else '' }}" required>
+                </div>
+                <div>
+                    <label>Погрешность (мин):</label>
+                    <input type="number" name="time_delta" value="{{ comp.time_delta if comp else 3 }}" required>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <label>Зачетные группы (категории):</label>
+                <div id="categories-container">
+                    <!-- Динамические категории будут добавлены скриптом -->
+                </div>
+                <button type="button" class="btn btn-secondary" onclick="addCategoryRow()" style="margin-top: 6px;">+ Добавить категорию</button>
+            </div>
+
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary">
+                    {% if comp %}Сохранить изменения{% else %}Создать соревнование{% endif %}
+                </button>
+                <a href="/admin" class="btn btn-secondary">Отмена</a>
+            </div>
+        </form>
+    </div>
+
+<!-- Передаем категории из Flask в виде чистого JSON для JS -->
+    <script id="existing-categories-data" type="application/json">
+        {{ (comp_categories or []) | tojson }}
+    </script>
+
+    <script>
+        const defaultCategories = [
+            "A1 - радиостанция с одним участником, все диапазоны, смесь (SOAB)",
+            "B1 - радиостанция с двумя или тремя участниками, все диапазоны, смесь (MOAB)",
+            "A2 - радиостанция с одним участником – диапазон 160м, смесь (SOSB-160)",
+            "А3 - радиостанция с одним или несколькими участниками, вне Приморского края – все диапазоны – (CW/SSB)",
+            "CHECKLOG - Отчет для контроля"
+        ];
+
+        function addCategoryRow(value = "") {
+            const container = document.getElementById("categories-container");
+            const row = document.createElement("div");
+            row.className = "category-row";
+            
+            row.innerHTML = `
+                <input type="text" name="categories[]" value="${value.replace(/"/g, '&quot;')}" placeholder="Введите зачетную группу" required>
+                <button type="button" class="btn btn-danger" onclick="removeCategoryRow(this)">Удалить</button>
+            `;
+            container.appendChild(row);
+        }
+
+        function removeCategoryRow(button) {
+            const container = document.getElementById("categories-container");
+            if (container.children.length > 1) {
+                button.parentElement.remove();
+            } else {
+                alert("Должна остаться хотя бы одна зачетная группа!");
+            }
+        }
+
+        // Инициализация категорий (чистый JavaScript, без ошибок в VS Code)
+        window.addEventListener("DOMContentLoaded", () => {
+            const dataElement = document.getElementById("existing-categories-data");
+            let categories = [];
+            
+            try {
+                categories = JSON.parse(dataElement.textContent || "[]");
+            } catch (e) {
+                categories = [];
+            }
+
+            if (Array.isArray(categories) && categories.length > 0) {
+                // Если редактируем — подгружаем существующие категории
+                categories.forEach(cat => addCategoryRow(cat));
+            } else {
+                // Если создаем новое — подгружаем категории по умолчанию
+                defaultCategories.forEach(cat => addCategoryRow(cat));
+            }
+        });
+    </script>
+</body>
+</html>

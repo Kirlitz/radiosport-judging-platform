@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Панель администратора</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 1000px; margin: 20px auto; padding: 0 15px; color: #333; }
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #dee2e6; padding-bottom: 15px; margin-bottom: 20px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #dee2e6; }
+        th { background: #f8f9fa; }
+        .btn { padding: 6px 12px; border-radius: 4px; text-decoration: none; font-weight: bold; font-size: 13px; display: inline-block; border: none; cursor: pointer; }
+        .btn-success { background: #28a745; color: white; }
+        .btn-primary { background: #007bff; color: white; }
+        .btn-warning { background: #ffc107; color: #212529; }
+        .btn-danger { background: #dc3545; color: white; }
+        .btn-secondary { background: #6c757d; color: white; }
+        .status-badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; }
+        .badge-success { background: #d4edda; color: #155724; }
+        .badge-secondary { background: #e2e3e5; color: #383d41; }
+        .actions { display: flex; gap: 6px; }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h2>Управление соревнованиями</h2>
+        <div>
+            <a href="{{ url_for('admin.add_competition') }}" class="btn btn-success">+ Создать соревнование</a>
+            <a href="{{ url_for('admin.logout') }}" class="btn btn-secondary">Выход</a>
+        </div>
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Название</th>
+                <th>Начало</th>
+                <th>Окончание</th>
+                <th>Статус судейства</th>
+                <th>Действия</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for comp in competitions %}
+            <tr>
+                <td><strong>{{ comp.name }}</strong></td>
+                <td>{{ comp.start_time.strftime('%d.%m.%Y %H:%M') }}</td>
+                <td>{{ comp.end_time.strftime('%d.%m.%Y %H:%M') }}</td>
+                <td>
+                    {% if comp.is_judged %}
+                        <span class="status-badge badge-success">Просужено</span>
+                    {% else %}
+                        <span class="status-badge badge-secondary">Ожидает</span>
+                    {% endif %}
+                </td>
+                <td class="actions">
+                    <a href="{{ url_for('admin.judge_competition', comp_id=comp.id) }}" class="btn btn-primary" onclick="return confirm('Запустить перекрестную проверку?')">
+                        {% if comp.is_judged %}Пересудить{% else %}Судить{% endif %}
+                    </a>
+                    <a href="{{ url_for('admin.edit_competition', comp_id=comp.id) }}" class="btn btn-warning">Изменить</a>
+                    <a href="{{ url_for('admin.delete_competition', comp_id=comp.id) }}" class="btn btn-danger" onclick="return confirm('Удалить соревнование и все его отчеты?')">Удалить</a>
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="5" style="text-align: center; color: #6c757d;">Соревнований пока нет</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+</body>
+</html>
