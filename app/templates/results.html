@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Результаты — {{ comp.name }}</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 1200px; margin: 20px auto; padding: 0 15px; color: #333; }
+        .header { border-bottom: 2px solid #007bff; padding-bottom: 10px; margin-bottom: 25px; }
+        .header h1 { margin: 0; color: #212529; font-size: 24px; }
+        .header p { margin: 5px 0 0 0; color: #6c757d; font-size: 14px; }
+        .category-block { margin-bottom: 35px; }
+        .category-title { background: #007bff; color: white; padding: 8px 15px; border-radius: 4px 4px 0 0; font-size: 16px; margin: 0; }
+        table { width: 100%; border-collapse: collapse; margin-top: 0; font-size: 13px; }
+        th, td { border: 1px solid #dee2e6; padding: 8px; text-align: center; }
+        th { background: #f8f9fa; }
+        .sub-header { background: #e9ecef; font-weight: bold; }
+        tr:nth-child(even) { background-color: #f8f9fa; }
+        .place-1 { background-color: #fff3cd !important; font-weight: bold; } /* Золото */
+        .place-2 { background-color: #e2e3e5 !important; font-weight: bold; } /* Серебро */
+        .place-3 { background-color: #f8d7da !important; font-weight: bold; } /* Бронза */
+        .callsign { font-weight: bold; color: #007bff; }
+        .btn-back { display: inline-block; margin-bottom: 15px; color: #007bff; text-decoration: none; font-weight: bold; }
+        .btn-excel { display: inline-block; margin-bottom: 15px; margin-left: 15px; background: #28a745; color: white; padding: 6px 12px; border-radius: 4px; text-decoration: none; font-weight: bold; }
+        .btn-excel:hover { background: #218838; }
+    </style>
+</head>
+<body>
+
+    <a href="{{ url_for('admin.index') }}" class="btn-back">← Назад в панель администратора</a>
+    <a href="{{ url_for('admin.export_excel', comp_id=comp.id) }}" class="btn-excel">⬇ Экспорт в Excel</a>
+
+    <div class="header">
+        <h1>Результаты судейства: {{ comp.name }}</h1>
+        <p>Дата проведения: {{ comp.start_time.strftime('%d.%m.%Y %H:%M') }} — {{ comp.end_time.strftime('%d.%m.%Y %H:%M') }}</p>
+    </div>
+
+    {% if not comp.is_judged %}
+        <div style="background: #fff3cd; color: #856404; padding: 15px; border-radius: 4px; border: 1px solid #ffeeba;">
+            Соревнование еще не было судимо. Запустите перекрестную проверку в панели администратора.
+        </div>
+    {% else %}
+
+        {% for category, logs in grouped_results.items() %}
+        <div class="category-block">
+            <h3 class="category-title">Зачетная группа: {{ category }}</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th rowspan="2" style="width: 40px;">Место</th>
+                        <th rowspan="2">Позывной</th>
+                        <th rowspan="2">ФИО</th>
+                        <th rowspan="2">Г.р.</th>
+                        <th rowspan="2">Разряд</th>
+                        <th rowspan="2">Субъект РФ</th>
+                        <th colspan="4" class="sub-header">Заявлено</th>
+                        <th colspan="4" class="sub-header">Подтверждено</th>
+                        <th rowspan="2" style="background: #e2e3e5;">% подтв. связей</th>
+                    </tr>
+                    <tr>
+                        <th>Связей</th>
+                        <th>Очки QSO</th>
+                        <th>Доп. очки</th>
+                        <th>Всего</th>
+                        <th>Связей</th>
+                        <th>Очки QSO</th>
+                        <th>Доп. очки</th>
+                        <th>Всего</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for log in logs %}
+                    <tr class="{% if loop.index == 1 %}place-1{% elif loop.index == 2 %}place-2{% elif loop.index == 3 %}place-3{% endif %}">
+                        <td><strong>{{ loop.index }}</strong></td>
+                        <td class="callsign">{{ log.callsign }}</td>
+                        
+                        <!-- Данные из связанной модели Operator -->
+                        <td style="text-align: left;">{{ log.operators | map(attribute='fio') | join(', ') if log.operators else '-' }}</td>
+                        <td>{{ log.operators | map(attribute='dob') | join(', ') if log.operators else '-' }}</td>
+                        <td>{{ log.operators | map(attribute='rank') | join(', ') if log.operators else '-' }}</td>
+                        
+                        <!-- Регион из поля location -->
+                        <td>{{ log.location or '-' }}</td>
+                        
+                        <!-- Заявлено -->
+                        <td>{{ log.claimed_qsos or 0 }}</td>
+                        <td>{{ log.claimed_qso_points or 0 }}</td>
+                        <td>{{ log.claimed_mult or 0 }}</td>
+                        <td><strong>{{ log.claimed_score or 0 }}</strong></td>
+                        
+                        <!-- Подтверждено -->
+                        <td>{{ log.confirmed_qsos or 0 }}</td>
+                        <td>{{ log.confirmed_qso_points or 0 }}</td>
+                        <td>{{ log.confirmed_mult or 0 }}</td>
+                        <td><strong style="color: #28a745;">{{ log.score or 0 }}</strong></td>
+
+                        <!-- Процент подтверждения -->
+                        {% set claimed = log.claimed_qsos or 0 %}
+                        {% set confirmed = log.confirmed_qsos or 0 %}
+                        {% set percent = (confirmed / claimed * 100) if claimed > 0 else 0 %}
+                        <td><strong>{{ "%.1f"|format(percent) }}%</strong></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+            <p>Отчеты участников отсутствуют.</p>
+        {% endfor %}
+
+    {% endif %}
+
+</body>
+</html>

@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Панель администратора</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 1200px; margin: 20px auto; padding: 0 15px; color: #333; }
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #dee2e6; padding-bottom: 15px; margin-bottom: 20px; }
+        
+        /* Всплывающие уведомления Flash */
+        .flashes { list-style: none; padding: 0; margin-bottom: 20px; }
+        .alert { padding: 12px 15px; border-radius: 4px; margin-bottom: 10px; font-weight: bold; }
+        .alert-success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .alert-danger { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .alert-warning { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #dee2e6; vertical-align: middle; }
+        th { background: #f8f9fa; }
+        
+        .btn { padding: 6px 12px; border-radius: 4px; text-decoration: none; font-weight: bold; font-size: 13px; display: inline-block; border: 1px solid transparent; cursor: pointer; white-space: nowrap; }
+        .btn-success { background: #28a745; color: white; }
+        .btn-primary { background: #007bff; color: white; }
+        .btn-info { background: #17a2b8; color: white; }
+        .btn-warning { background: #ffc107; color: #212529; }
+        .btn-danger { background: #dc3545; color: white; }
+        .btn-secondary { background: #6c757d; color: white; }
+        
+        /* Стиль для кнопки UBN */
+        .btn-ubn { background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7; }
+        .btn-ubn:hover { background: #c8e6c9; }
+
+        .status-badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; display: inline-block; }
+        .badge-success { background: #d4edda; color: #155724; }
+        .badge-secondary { background: #e2e3e5; color: #383d41; }
+        
+        .actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h2>Управление соревнованиями</h2>
+        <div>
+            <a href="{{ url_for('admin.add_competition') }}" class="btn btn-success">+ Создать соревнование</a>
+            <a href="{{ url_for('admin.logout') }}" class="btn btn-secondary">Выход</a>
+        </div>
+    </div>
+
+    <!-- Вывод системных сообщений (flash) -->
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <ul class="flashes">
+        {% for category, message in messages %}
+          <li class="alert alert-{{ category if category != 'message' else 'info' }}">{{ message }}</li>
+        {% endfor %}
+        </ul>
+      {% endif %}
+    {% endwith %}
+
+    <table>
+        <thead>
+            <tr>
+                <th>Название</th>
+                <th>Начало</th>
+                <th>Окончание</th>
+                <th>Статус судейства</th>
+                <th>Действия</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for comp in competitions %}
+            <tr>
+                <td><strong>{{ comp.name }}</strong></td>
+                <td>{{ comp.start_time.strftime('%d.%m.%Y %H:%M') }}</td>
+                <td>{{ comp.end_time.strftime('%d.%m.%Y %H:%M') }}</td>
+                <td>
+                    {% if comp.is_judged %}
+                        <span class="status-badge badge-success">Просужено</span>
+                    {% else %}
+                        <span class="status-badge badge-secondary">Ожидает</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <div class="actions">
+                        {% if comp.is_judged %}
+                            <a href="{{ url_for('main.show_results', comp_id=comp.id) }}" class="btn btn-info">Результаты</a>
+                            <a href="{{ url_for('admin.download_ubn_archive', comp_id=comp.id) }}" class="btn btn-ubn" title="Скачать протоколы UBN участников в ZIP">📦 UBN (ZIP)</a>
+                        {% endif %}
+                        
+                        <form action="{{ url_for('admin.judge_competition', comp_id=comp.id) }}" method="POST" style="display:inline;" onsubmit="return confirm('Запустить перекрестную проверку?');">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="btn btn-primary">{% if comp.is_judged %}Пересудить{% else %}Судить{% endif %}</button>
+                        </form>
+
+                        <a href="{{ url_for('admin.logs_list', comp_id=comp.id) }}" class="btn btn-primary">Отчеты</a>
+                        <a href="{{ url_for('admin.edit_competition', comp_id=comp.id) }}" class="btn btn-warning">Изменить</a>
+                        <form action="{{ url_for('admin.delete_competition', comp_id=comp.id) }}" method="POST" style="display:inline;">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Вы уверены, что хотите удалить соревнование и все его логи?');">Удалить</button>
+                        </form>
+                    </div>
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="5" style="text-align: center; color: #6c757d; padding: 20px;">Соревнований пока нет</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+</body>
+</html>

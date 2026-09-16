@@ -1,0 +1,1 @@
+# radiosport-judging-platform
