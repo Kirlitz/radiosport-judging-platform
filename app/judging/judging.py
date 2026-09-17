@@ -2,7 +2,7 @@ import json
 from datetime import datetime, timedelta
 from app.models import db, Competition, ReceivedLog, QSO
 from app.cabrillo import parse_cabrillo_file
-from app.utils import get_official_logs, full_exchange, get_qso_orders
+from app.utils import get_official_logs, full_exchange, get_qso_orders, category_rules_map, out_of_category_reason
 
 PLUGIN_TITLE = "Чемпионат Приморского края на КВ - смесь"
 
@@ -79,8 +79,10 @@ def run_judging_primorye(comp_id):
     logs = get_official_logs(comp_id)
     tours = calculate_tours(comp)
     num_tours = len(tours)
+    rules_map = category_rules_map(comp.categories)
     
     for log in logs:
+        rules = rules_map.get(log.category) if log.category else None
         parsed_qsos = parse_cabrillo_file(log.file_path, log.callsign)
         
         claimed_q_pts = 0
@@ -114,7 +116,18 @@ def run_judging_primorye(comp_id):
                 if t['start'] <= qso_time < t['end'] or (is_last_tour and qso_time == t['end']):
                     tour_num = t['num']
                     break
-            
+
+            is_valid = tour_num > 0
+            error_reason = '' if is_valid else 'Связь вне времени тура'
+            # Связи на диапазонах/видах модуляции, не входящих в зачетную группу
+            # участника, не учитываются (0 очков), но остаются в протоколе
+            # как «вне зачета».
+            if is_valid:
+                cat_reason = out_of_category_reason(rules, band, mode)
+                if cat_reason:
+                    is_valid = False
+                    error_reason = cat_reason
+
             qso_db = QSO(
                 competition_id=comp_id,
                 log_id=log.id,
@@ -128,8 +141,8 @@ def run_judging_primorye(comp_id):
                 rst_rcvd=rst_rcvd,
                 nr_rcvd=nr_rcvd,
                 tour_num=tour_num,
-                is_valid=(tour_num > 0),
-                error_reason='' if tour_num > 0 else 'Связь вне времени тура'
+                is_valid=is_valid,
+                error_reason=error_reason
             )
             db.session.add(qso_db)
             

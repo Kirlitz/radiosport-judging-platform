@@ -13,7 +13,7 @@ from app.auth import permission_required, get_current_user
 from app import limiter
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
-from app.utils import get_official_logs
+from app.utils import get_official_logs, get_categories_list, parse_categories, category_rules_map, out_of_category_reason
 import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill
 
@@ -29,12 +29,6 @@ PROTECTED_USERNAMES = {'admin'}
 # Заглушка для выравнивания времени ответа при несуществующем логине
 # (защита от определения существования аккаунта по задержке).
 _DUMMY_HASH = generate_password_hash('invalid-password-placeholder-for-timing')
-
-def get_categories_list(categories_json):
-    try:
-        return json.loads(categories_json) if categories_json else []
-    except Exception:
-        return []
 
 def get_available_plugins():
     """Сканирует директорию app/judging и возвращает список доступных плагинов."""
@@ -108,7 +102,12 @@ def generate_ubn_text(log, comp):
         'NIL_NOT_IN_LOG': 'Нет в отчете корреспондента (NIL)',
         'EXCHANGE_MISMATCH': 'Ошибка в контрольном номере',
     }
-    
+
+    # Зачетные ограничения группы участника: связи на запрещенных для группы
+    # диапазонах/видах модуляции выводятся как «вне зачета».
+    rules_map = category_rules_map(comp.categories)
+    rules = rules_map.get(log.category) if log.category else None
+
     seen_mults = set()
     for q in qsos:
         dt_str = q.qso_datetime.strftime('%Y-%m-%d %H:%M') if q.qso_datetime else '----'
@@ -127,7 +126,11 @@ def generate_ubn_text(log, comp):
         else:
             pts = 0
             mult_pts = 0
-            status = error_map.get(q.error_reason, q.error_reason or "Ошибка")
+            out_reason = out_of_category_reason(rules, q.band, q.mode)
+            if out_reason:
+                status = out_reason
+            else:
+                status = error_map.get(q.error_reason, q.error_reason or "Ошибка")
             
         lines.append(f"{dt_str:<17} {q.band:<6} {q.mode:<4} {sent_str:<10} {q.corr_call:<10} {rcvd_str:<10} {pts:<5} {mult_pts:<5} {status}")
         
@@ -179,10 +182,22 @@ def index():
     return render_template('admin_index.html', competitions=competitions)
 
 def _parse_competition_form():
-    """Разбор полей формы создания/редактирования соревнования."""
-    categories_list = [c.strip() for c in request.form.getlist('categories[]') if c.strip()]
-    bands_list = [b.strip() for b in request.form.getlist('bands[]') if isinstance(b, str) and b.strip()]
-    modes_list = [m.strip() for m in request.form.getlist('modes[]') if isinstance(m, str) and m.strip()]
+    """Разбор полей формы создания/редактирования соревнования.
+    Диапазоны и виды модуляции задаются отдельно для КАЖДОЙ зачетной группы:
+    поля cat_bands_<i>[] / cat_modes_<i>[] соответствуют категории с индексом i."""
+    raw_names = request.form.getlist('categories[]')
+    categories_list = []
+    for i, name in enumerate(raw_names):
+        name = name.strip()
+        if not name:
+            continue
+        bands_list = [b.strip() for b in request.form.getlist(f'cat_bands_{i}[]') if isinstance(b, str) and b.strip()]
+        modes_list = [m.strip() for m in request.form.getlist(f'cat_modes_{i}[]') if isinstance(m, str) and m.strip()]
+        categories_list.append({
+            'name': name,
+            'bands': bands_list,
+            'modes': modes_list,
+        })
 
     block_starts = request.form.getlist('block_start[]')
     block_ends = request.form.getlist('block_end[]')
@@ -201,8 +216,6 @@ def _parse_competition_form():
 
     return {
         'categories': categories_list,
-        'bands': bands_list,
-        'modes': modes_list,
         'tours': tours_list,
     }
 
@@ -220,9 +233,7 @@ def add_competition():
             time_delta_allowed=request.form.get('time_delta', type=int, default=3),
             scoring_script_filename=request.form.get('scoring_script_filename', 'primorye_hf'),
             categories=json.dumps(data['categories'], ensure_ascii=False),
-            tours=json.dumps(data['tours'], ensure_ascii=False),
-            bands=json.dumps(data['bands'], ensure_ascii=False),
-            modes=json.dumps(data['modes'], ensure_ascii=False)
+            tours=json.dumps(data['tours'], ensure_ascii=False)
         )
         db.session.add(new_comp)
         db.session.commit()
@@ -230,7 +241,7 @@ def add_competition():
         
     plugins = get_available_plugins()
     return render_template('admin_edit.html', comp=None, categories_list=[], plugins=plugins,
-                           tours_data=[], bands_data=[], modes_data=[])
+                           tours_data=[])
 
 @admin_bp.route('/edit/<int:comp_id>', methods=['GET', 'POST'])
 @permission_required('competitions.edit')
@@ -249,19 +260,15 @@ def edit_competition(comp_id):
         
         comp.categories = json.dumps(data['categories'], ensure_ascii=False)
         comp.tours = json.dumps(data['tours'], ensure_ascii=False)
-        comp.bands = json.dumps(data['bands'], ensure_ascii=False)
-        comp.modes = json.dumps(data['modes'], ensure_ascii=False)
         
         db.session.commit()
         return redirect(url_for('admin.index'))
         
-    categories_list = get_categories_list(comp.categories)
+    categories_list = parse_categories(comp.categories)
     plugins = get_available_plugins()
     tours_data = json.loads(comp.tours) if comp.tours else []
-    bands_data = json.loads(comp.bands) if comp.bands else []
-    modes_data = json.loads(comp.modes) if comp.modes else []
     return render_template('admin_edit.html', comp=comp, categories_list=categories_list, plugins=plugins,
-                           tours_data=tours_data, bands_data=bands_data, modes_data=modes_data)
+                           tours_data=tours_data)
 
 @admin_bp.route('/delete/<int:comp_id>', methods=['POST'])
 @permission_required('competitions.delete')

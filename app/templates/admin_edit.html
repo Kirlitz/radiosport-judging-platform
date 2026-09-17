@@ -27,6 +27,11 @@
         .dynamic-row { display: flex; gap: 10px; margin-bottom: 10px; align-items: center; }
         .dynamic-row input { flex: 1; }
         .tour-row { display: grid; grid-template-columns: 1fr 1fr 1.2fr 80px auto; gap: 10px; align-items: end; background: #f8f9fa; padding: 12px; border: 1px dashed #adb5bd; border-radius: 4px; margin-bottom: 10px; }
+        .cat-row { border: 1px solid #adb5bd; border-radius: 5px; padding: 12px; margin-bottom: 12px; background: #fff; }
+        .cat-row-header { display: flex; gap: 10px; align-items: flex-start; }
+        .cat-params { margin-top: 8px; border-top: 1px dashed #ced4da; padding-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        @media (max-width: 700px) { .cat-params { grid-template-columns: 1fr; } }
+        .cat-param-title { font-size: 12px; font-weight: bold; color: #495057; margin-bottom: 4px; display: block; }
         .form-actions { display: flex; gap: 10px; margin-top: 20px; border-top: 1px solid #dee2e6; padding-top: 15px; }
         .cat-counter { font-size: 11px; color: #6c757d; margin-top: 3px; }
         .cat-counter-over { color: #dc3545; font-weight: bold; }
@@ -74,29 +79,15 @@
                 <div id="tours-container"></div>
                 <button type="button" class="btn btn-secondary" onclick="addTourRow()">+ Добавить сеанс</button>
             </div>
-
-            <div class="form-section">
-                <h3>Технические параметры</h3>
-                <div class="form-group">
-                    <label>Разрешенные диапазоны:</label>
-                    <div class="checkbox-grid">
-                        {% for band in ['160m', '80m', '40m', '20m', '15m', '10m', '2m', '70cm', '23cm'] %}
-                        <label class="checkbox-item"><input type="checkbox" name="bands[]" value="{{ band }}"> {{ band }}</label>
-                        {% endfor %}
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label>Разрешенные виды модуляции (Modes):</label>
-                    <div class="checkbox-grid">
-                        {% for mode in ['CW', 'SSB', 'FM', 'AM', 'RTTY', 'DIGI'] %}
-                        <label class="checkbox-item"><input type="checkbox" name="modes[]" value="{{ mode }}"> {{ mode }}</label>
-                        {% endfor %}
-                    </div>
-                </div>
-            </div>
             
             <div class="form-section">
                 <h3>Зачетные группы (Категории)</h3>
+                <p style="font-size:12px; color:#6c757d; margin-top:0;">
+                    Для каждой группы укажите диапазоны и виды модуляции, на которых допускается работа.
+                    Связи участника на других диапазонах/видах модуляции будут оценены в 0 очков
+                    (в UBN-протоколе — «вне зачета»), корреспонденту очки начисляются, если его группа это допускает.
+                    Если не отмечено ни одного диапазона или вида модуляции — для группы разрешены все.
+                </p>
                 <div id="categories-container"></div>
                 <button type="button" class="btn btn-secondary" onclick="addCategoryRow()">+ Добавить категорию</button>
             </div>
@@ -110,15 +101,18 @@
 
     <script id="data-categories" type="application/json">{{ (categories_list or []) | tojson }}</script>
     <script id="data-tours" type="application/json">{{ tours_data | tojson }}</script>
-    <script id="data-bands" type="application/json">{{ bands_data | tojson }}</script>
-    <script id="data-modes" type="application/json">{{ modes_data | tojson }}</script>
 
     <script>
-        const defaultCategories = ["A1 - радиостанция с одним участником, все диапазоны, смесь (SOAB)", "CHECKLOG - Отчет для контроля"];
+        const defaultCategories = [
+            {name: "A1 - радиостанция с одним участником, все диапазоны, смесь (SOAB)", bands: [], modes: []},
+            {name: "CHECKLOG - Отчет для контроля", bands: [], modes: []}
+        ];
         const CATEGORY_MAX_LENGTH = 110;
+        const BANDS = ['160m', '80m', '40m', '20m', '15m', '10m', '2m', '70cm', '23cm'];
+        const MODES = ['CW', 'SSB', 'FM', 'AM', 'RTTY', 'DIGI'];
 
         function categoryInputCount(inputEl) {
-            const row = inputEl.closest(".dynamic-row");
+            const row = inputEl.closest(".cat-row");
             const counter = row.querySelector(".cat-counter");
             const warning = row.querySelector(".cat-warning");
             const len = inputEl.value.length;
@@ -134,18 +128,61 @@
             }
         }
 
-        function addCategoryRow(value = "") {
+        function renumberCategoryRows() {
             const container = document.getElementById("categories-container");
+            [...container.children].forEach((row, i) => {
+                row.querySelectorAll("input.cat-band").forEach(cb => cb.name = `cat_bands_${i}[]`);
+                row.querySelectorAll("input.cat-mode").forEach(cb => cb.name = `cat_modes_${i}[]`);
+            });
+        }
+
+        function removeCategoryRow(btn) {
+            const container = document.getElementById("categories-container");
+            if (container.children.length <= 1) {
+                alert("Должна остаться хотя бы одна группа!");
+                return;
+            }
+            btn.closest(".cat-row").remove();
+            renumberCategoryRows();
+        }
+
+        function addCategoryRow(name = "", bands = [], modes = []) {
+            const container = document.getElementById("categories-container");
+            const safeName = String(name).replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+            const bandCbs = BANDS.map(b =>
+                `<label class="checkbox-item"><input type="checkbox" class="cat-band" value="${b}" ${bands.includes(b) ? 'checked' : ''}> ${b}</label>`
+            ).join("");
+
+            const modeCbs = MODES.map(m =>
+                `<label class="checkbox-item"><input type="checkbox" class="cat-mode" value="${m}" ${modes.includes(m) ? 'checked' : ''}> ${m}</label>`
+            ).join("");
+
             const row = document.createElement("div");
-            row.className = "dynamic-row";
-            row.innerHTML = `<div style="flex:1">
-                    <input type="text" name="categories[]" value="${value.replace(/"/g, '&quot;')}" required oninput="categoryInputCount(this)">
-                    <div class="cat-counter">${value.length} / ${CATEGORY_MAX_LENGTH}</div>
-                    <div class="cat-warning" style="display:none">Название зачетной группы не должно превышать ${CATEGORY_MAX_LENGTH} символов.</div>
+            row.className = "cat-row";
+            row.innerHTML = `
+                <div class="cat-row-header">
+                    <div style="flex:1">
+                        <label style="font-size:12px">Название зачетной группы:</label>
+                        <input type="text" name="categories[]" value="${safeName}" required oninput="categoryInputCount(this)">
+                        <div class="cat-counter">${String(name).length} / ${CATEGORY_MAX_LENGTH}</div>
+                        <div class="cat-warning" style="display:none">Название зачетной группы не должно превышать ${CATEGORY_MAX_LENGTH} символов.</div>
+                    </div>
+                    <button type="button" class="btn btn-danger" onclick="removeCategoryRow(this)">Удалить</button>
                 </div>
-                <button type="button" class="btn btn-danger" onclick="if(document.getElementById('categories-container').children.length > 1) this.parentElement.remove(); else alert('Должна остаться хотя бы одна группа!');">Удалить</button>`;
+                <div class="cat-params">
+                    <div>
+                        <span class="cat-param-title">Допустимые диапазоны:</span>
+                        <div class="checkbox-grid">${bandCbs}</div>
+                    </div>
+                    <div>
+                        <span class="cat-param-title">Допустимые виды модуляции:</span>
+                        <div class="checkbox-grid">${modeCbs}</div>
+                    </div>
+                </div>
+                <div style="font-size:11px; color:#6c757d; margin-top:8px;">Если не отмечено ни одного диапазона или вида модуляции — для группы разрешены все.</div>`;
             container.appendChild(row);
-            categoryInputCount(row.querySelector('input'));
+            renumberCategoryRows();
         }
 
         function handleDivideChange(selectEl) {
@@ -190,20 +227,13 @@
             const safeParse = (id) => { try { return JSON.parse(document.getElementById(id).textContent || "[]"); } catch { return []; } };
             
             const categories = safeParse("data-categories");
-            (categories.length ? categories : defaultCategories).forEach(cat => addCategoryRow(cat));
+            (categories.length ? categories : defaultCategories).forEach(cat => {
+                addCategoryRow(cat.name || cat, cat.bands || [], cat.modes || []);
+            });
 
             const tours = safeParse("data-tours");
             if (tours.length > 0) tours.forEach(t => addTourRow(t.start, t.end, t.divide_by, t.divide_value));
             else addTourRow(); 
-
-            safeParse("data-bands").forEach(band => {
-                const cb = document.querySelector(`input[name="bands[]"][value="${band}"]`);
-                if (cb) cb.checked = true;
-            });
-            safeParse("data-modes").forEach(mode => {
-                const cb = document.querySelector(`input[name="modes[]"][value="${mode}"]`);
-                if (cb) cb.checked = true;
-            });
 
             document.querySelector("form").addEventListener("submit", function(e) {
                 const inputs = document.querySelectorAll('input[name="categories[]"]');
