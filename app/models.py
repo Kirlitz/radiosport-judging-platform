@@ -93,6 +93,12 @@ class ReceivedLog(db.Model):
     
     # ИЗМЕНЕНО: String(150), чтобы соответствовать логике в user.py и вмещать длинные адреса
     location = db.Column(db.String(150), default='-')
+
+    # Поля шапки отчета (Ermak/Cabrillo формат). Обязательные: name, email, address.
+    name = db.Column(db.String(100), default='')
+    email = db.Column(db.String(150), default='')
+    address = db.Column(db.String(255), default='')
+    club = db.Column(db.String(200), default='')
     
     # СВЯЗЬ: Один лог -> Много операторов
     # cascade="all, delete-orphan" автоматически удалит старых операторов при обновлении лога

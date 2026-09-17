@@ -1,6 +1,22 @@
 import json
 from app.models import ReceivedLog, QSO
 
+# Алиасы видов модуляции: разные программы (Ермак, логгеры Cabrillo) могут
+# записать один и тот же вид по-разному (PH/PHONE/USB/LSB вместо SSB).
+# Приводим к каноническому значению, используемому в конструкторе.
+MODE_ALIASES = {
+    'PH': 'SSB',
+    'PHONE': 'SSB',
+    'USB': 'SSB',
+    'LSB': 'SSB',
+}
+
+def normalize_mode(mode):
+    """Приводит вид модуляции к каноническому значению (SSB, CW, FM, ...)."""
+    m = str(mode).strip().upper()
+    return MODE_ALIASES.get(m, m)
+
+
 def get_categories_list(categories_raw):
     """Декодирует НАЗВАНИЯ зачетных групп из JSON или старого текстового формата.
     Для полного разбора (с диапазонами и видами модуляции) используйте parse_categories."""
@@ -49,7 +65,7 @@ def category_rules_map(categories_raw):
     for c in parse_categories(categories_raw):
         rules[c['name']] = {
             'bands': {b.lower() for b in c['bands']},
-            'modes': {m.upper() for m in c['modes']},
+            'modes': {normalize_mode(m) for m in c['modes']},
         }
     return rules
 
@@ -68,7 +84,7 @@ def out_of_category_reason(rules, band, mode):
     allowed_bands = rules.get('bands') or set()
     allowed_modes = rules.get('modes') or set()
     band_out = bool(allowed_bands) and str(band).strip().lower() not in allowed_bands
-    mode_out = bool(allowed_modes) and str(mode).strip().upper() not in allowed_modes
+    mode_out = bool(allowed_modes) and normalize_mode(mode) not in allowed_modes
     if not band_out and not mode_out:
         return None
     labels = []

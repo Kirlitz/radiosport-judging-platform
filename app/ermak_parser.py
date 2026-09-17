@@ -96,7 +96,17 @@ def parse_operator_line(line_val):
         }
 
 
-def parse_ermak(file_content, comp_start=None, comp_end=None):
+# Ключевые слова шапки, для которых допускается запись без двоеточия
+# (например "LOCATION PK01" или "EMAIL user@mail.ru"). Ключ — нормализованный.
+_KNOWN_HEADER_KEYS = frozenset({
+    'START-OF-LOG', 'END-OF-LOG', 'CALLSIGN', 'CONTEST',
+    'CATEGORY-OPERATOR', 'CATEGORY-BAND', 'CATEGORY-MODE',
+    'CATEGORY-ASSISTED', 'CATEGORY-POWER', 'LOCATION', 'NAME',
+    'ADDRESS', 'EMAIL', 'CLUB', 'SOAPBOX', 'OPERATORS', 'OPERATOR',
+    'CLAIMED-SCORE', 'CREATED-BY', 'QSO'
+})
+
+def parse_ermak(file_content, comp_start=None, comp_end=None, plugin_title=None):
     if hasattr(file_content, 'read'):
         file_content = file_content.read()
 
@@ -123,25 +133,43 @@ def parse_ermak(file_content, comp_start=None, comp_end=None):
     missing_headers = []
     operators = [] 
     
-    required_headers = ['CALLSIGN', 'CONTEST', 'CATEGORY-OPERATOR']
+    required_headers = ['START-OF-LOG', 'END-OF-LOG', 'CALLSIGN', 'CONTEST']
 
     for line in text.split('\n'):
         line_str = line.strip()
         if not line_str:
             continue
 
-        if ':' in line_str and not line_str.upper().startswith('QSO:'):
-            parts = line_str.split(':', 1)
-            raw_key = parts[0]
-            val = parts[1].replace('\xa0', ' ').strip() if len(parts) > 1 else ''
-            
-            key = normalize_header_key(raw_key)
-            headers[key] = val
-            
-            if key in ['OPERATORS', 'OPERATOR']:
-                op_data = parse_operator_line(val)
-                if op_data:
-                    operators.append(op_data)
+        if not line_str.upper().startswith('QSO:'):
+            raw_key = None
+            val = ''
+            if ':' in line_str:
+                parts = line_str.split(':', 1)
+                raw_key = parts[0]
+                val = parts[1].replace('\xa0', ' ').strip() if len(parts) > 1 else ''
+            else:
+                # Поддержка записи ключевых слов без двоеточия: "LOCATION PK01",
+                # "EMAIL user@mail.ru" (пользователь мог забыть разделитель).
+                kwargs_scan = line_str.split(None, 1)
+                if len(kwargs_scan) == 2:
+                    key_candidate = normalize_header_key(kwargs_scan[0])
+                    if key_candidate in _KNOWN_HEADER_KEYS:
+                        raw_key = kwargs_scan[0]
+                        val = kwargs_scan[1].replace('\xa0', ' ').strip()
+
+            if raw_key:
+                key = normalize_header_key(raw_key)
+                headers[key] = val
+
+                if key in ['OPERATORS', 'OPERATOR'] and val:
+                    # В формате Ermak несколько операторов разделяются точкой с запятой.
+                    for op_segment in re.split(r'[;]', val):
+                        op_segment = op_segment.strip()
+                        if not op_segment:
+                            continue
+                        op_data = parse_operator_line(op_segment)
+                        if op_data:
+                            operators.append(op_data)
 
         elif line_str.upper().startswith('QSO:'):
             tokens = line_str.split()
@@ -211,6 +239,11 @@ def parse_ermak(file_content, comp_start=None, comp_end=None):
                     'raw_line': line_str
                 })
 
+    # Автозаполнение CONTEST из названия соревнования (PLUGIN_TITLE выбранного плагина),
+    # если в отчете поле не указано или пустое.
+    if plugin_title and not (headers.get('CONTEST') or '').strip():
+        headers['CONTEST'] = plugin_title
+
     for req in required_headers:
         if req not in headers:
             missing_headers.append(req)
@@ -222,67 +255,84 @@ def update_cabrillo_header(file_path, edited_data):
     with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
         lines = f.read().splitlines()
 
-    new_lines = []
-    
-    callsign_val = edited_data.get('callsign') or edited_data.get('CALLSIGN') or edited_data.get('header_CALLSIGN')
-    location_val = edited_data.get('region') or edited_data.get('location') or edited_data.get('LOCATION') or edited_data.get('operator_location')
-    
-    has_location_header = False
+    def _pick(*keys):
+        """Первое непустое значение из переданных ключей edited_data."""
+        for k in keys:
+            val = edited_data.get(k)
+            if val:
+                return val
+        return ''
+
+    # Новые значения полей шапки (из формы подтверждения).
+    rewriting = {
+        'CALLSIGN': _pick('callsign', 'CALLSIGN', 'header_CALLSIGN'),
+        'CONTEST': _pick('contest', 'CONTEST', 'header_CONTEST'),
+        'LOCATION': _pick('region', 'location', 'LOCATION', 'operator_location'),
+        'NAME': _pick('name', 'NAME', 'header_NAME'),
+        'ADDRESS': _pick('address', 'ADDRESS', 'header_ADDRESS'),
+        'EMAIL': _pick('email', 'EMAIL', 'header_EMAIL'),
+        'CLUB': _pick('club', 'CLUB', 'header_CLUB'),
+    }
+
+    start_of_log = ''
+    end_of_log = ''
+    category_lines = []
+    preserved_lines = []
 
     for line in lines:
         if not line.strip():
-            continue 
-            
+            continue
+
         line_clean = line.replace('\x00', '').strip()
         parts = line_clean.split(':', 1)
-        if len(parts) > 1:
-            raw_key = parts[0]
-            norm_key = normalize_header_key(raw_key)
-            
-            if norm_key == 'CALLSIGN' and callsign_val:
-                new_lines.append(f"CALLSIGN: {callsign_val}")
-                continue
-                
-            if norm_key == 'LOCATION':
-                has_location_header = True
-                if location_val:
-                    new_lines.append(f"LOCATION: {location_val}")
-                continue
+        norm_key = normalize_header_key(parts[0]) if len(parts) > 1 else ''
 
-            if norm_key in ['OPERATORS', 'OPERATOR']:
-                continue
-            
-        new_lines.append(line_clean)
+        if norm_key == 'START-OF-LOG':
+            start_of_log = line_clean
+        elif norm_key == 'END-OF-LOG':
+            end_of_log = line_clean
+        elif norm_key == 'CATEGORY-OPERATOR' or norm_key.startswith('CATEGORY'):
+            category_lines.append(line_clean)
+        elif norm_key in rewriting or norm_key in ['OPERATORS', 'OPERATOR']:
+            continue  # поле перезаписывается значениями из формы
+        else:
+            preserved_lines.append(line_clean)
 
-    if not has_location_header and location_val:
-        loc_insert_idx = len(new_lines)
-        for i, line in enumerate(new_lines):
-            line_upper = line.upper()
-            if any(line_upper.startswith(k) for k in ['CATEGORY', 'OPERATORS:', 'OPERATOR:', 'SOAPBOX:', 'QSO:']):
-                loc_insert_idx = i
-                break
-        new_lines.insert(loc_insert_idx, f"LOCATION: {location_val}")
+    # Собираем блок заголовка в стандартном порядке Cabrillo/Ermak.
+    header_lines = [start_of_log if start_of_log else 'START-OF-LOG: 3.0']
 
-    insert_idx = len(new_lines)
-    for i, line in enumerate(new_lines):
-        if line.upper().startswith('SOAPBOX:') or line.upper().startswith('QSO:'):
-            insert_idx = i
-            break
+    if rewriting.get('CONTEST'):
+        header_lines.append(f"CONTEST: {rewriting['CONTEST']}")
+    if rewriting.get('CALLSIGN'):
+        header_lines.append(f"CALLSIGN: {rewriting['CALLSIGN']}")
 
-    ops_lines = []
+    header_lines.extend(category_lines)
+
+    for field in ('LOCATION', 'NAME', 'ADDRESS', 'EMAIL', 'CLUB'):
+        if rewriting.get(field):
+            header_lines.append(f"{field}: {rewriting[field]}")
+
     for op in edited_data.get('operators', []):
         parts = []
-        if op.get('fio'): 
+        if op.get('fio'):
             fio_formatted = op['fio'].replace(' ', ', ') if ',' not in op['fio'] else op['fio']
             parts.append(fio_formatted)
         if op.get('dob'): parts.append(op['dob'])
         if op.get('rank'): parts.append(op['rank'])
         if op.get('callsign'): parts.append(op['callsign'])
-        
         if parts:
-            ops_lines.append(f"OPERATORS: {', '.join(parts)}")
+            header_lines.append(f"OPERATORS: {', '.join(parts)}")
 
-    final_lines = new_lines[:insert_idx] + ops_lines + new_lines[insert_idx:]
+    # Вставка заголовка перед первым QSO/END-OF-LOG.
+    insert_idx = len(preserved_lines)
+    for i, line in enumerate(preserved_lines):
+        upper = line.upper()
+        if upper.startswith('QSO:') or upper.startswith('END-OF-LOG:'):
+            insert_idx = i
+            break
+
+    final_lines = preserved_lines[:insert_idx] + header_lines + preserved_lines[insert_idx:]
+    final_lines.append(end_of_log if end_of_log else 'END-OF-LOG:')
 
     with open(file_path, 'w', encoding='utf-8') as f:
         for line in final_lines:

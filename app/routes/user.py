@@ -2,6 +2,7 @@ import re
 import os
 import json
 import secrets
+import importlib
 from datetime import datetime, timedelta
 from flask import Blueprint, request, render_template, current_app
 from werkzeug.utils import secure_filename
@@ -17,6 +18,21 @@ PENDING_TTL = timedelta(minutes=30)
 
 # Максимальная длина названия зачетной группы (должна совпадать с admin_edit.html)
 CATEGORY_MAX_LENGTH = 110
+
+# Проверка формата e-mail (строгая): имя@домен.зона
+EMAIL_RE = re.compile(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
+
+def get_plugin_title(comp):
+    """Возвращает PLUGIN_TITLE выбранного для соревнования плагина (или пустую строку)."""
+    script = (comp.scoring_script_filename or '').strip()
+    if not script:
+        return ''
+    try:
+        module = importlib.import_module(f'app.judging.{script}')
+        return getattr(module, 'PLUGIN_TITLE', '')
+    except Exception as e:
+        current_app.logger.error(f"Не удалось загрузить плагин {script}: {e}")
+        return ''
 
 def sanitize_text(text, max_length=100):
     """
@@ -52,7 +68,10 @@ def upload_log():
         return "Недопустимый формат файла", 400
         
     content = file.read()
-    headers, qsos, missing_headers, raw_text, operators = parse_ermak(content, comp.start_time, comp.end_time)
+    plugin_title = get_plugin_title(comp)
+    headers, qsos, missing_headers, raw_text, operators = parse_ermak(
+        content, comp.start_time, comp.end_time, plugin_title
+    )
     
     now = datetime.now()
     status_code = 'OK'
@@ -92,6 +111,7 @@ def upload_log():
 
     return render_template('preview.html',
                            contest=comp,
+                           contest_plugin_title=plugin_title,
                            status_code=status_code,
                            status_msg=status_msg,
                            upload_token=token,
@@ -157,6 +177,26 @@ def confirm_upload():
     # Регион
     location = sanitize_text(request.form.get('operator_location', ''), 150)
 
+    # Обязательные поля шапки отчета (Ermak/Cabrillo).
+    # Клиент заполняет их в форме preview; данные дополнительно очищаются.
+    name = sanitize_text(request.form.get('header_NAME', ''), 100)
+    address = sanitize_text(request.form.get('header_ADDRESS', ''), 255)
+    email = sanitize_text(request.form.get('header_EMAIL', ''), 150)
+    club = sanitize_text(request.form.get('header_CLUB', ''), 200)
+
+    if not name:
+        return "Ошибка: Обязательное поле NAME (ФИО оператора) не заполнено", 400
+    if not address:
+        return "Ошибка: Обязательное поле ADDRESS (почтовый адрес) не заполнено", 400
+    if not email:
+        return "Ошибка: Обязательное поле EMAIL (электронная почта) не заполнено", 400
+    if not EMAIL_RE.match(email):
+        return "Ошибка: Некорректный формат e-mail", 400
+
+    # CONTEST для сохраненной копии отчета всегда берется из плагина соревнования
+    # (PLUGIN_TITLE) — это единственный источник для заполнения/замены поля.
+    contest = get_plugin_title(comp)
+
     # Позывной берем из заголовка отчета (серверная копия).
     # Поле формы учитывается только если заголовка нет — именно для этого
     # случая preview.html показывает его как редактируемое.
@@ -220,20 +260,35 @@ def confirm_upload():
 
     # 1. Новая запись для КАЖДОЙ подачи: старые отчеты не затираются,
     #    а сохраняются. Лишние (дубли, чужие) администратор удаляет в админке.
+    # Считаем ранее принятые отчеты этого позывного — для нумерации файлов.
+    previous_count = ReceivedLog.query.filter_by(
+        competition_id=comp.id, callsign=callsign
+    ).count()
+
     new_log = ReceivedLog(
         competition_id=comp.id,
         callsign=callsign,
         category=claimed_category,
         file_path='',
         location=location if location else '-',
+        name=name,
+        email=email,
+        address=address,
+        club=club,
         claimed_qsos=len(qsos),
         operators=op_objects
     )
     db.session.add(new_log)
-    db.session.flush()  # чтобы получить id для уникального имени файла
+    db.session.flush()
 
-    # 2. Уникальное имя файла: <позывной>_<id_отчета>.cbr — коллизий не бывает
-    file_path = os.path.join(dir_path, f"{safe_callsign}_{new_log.id}.cbr")
+    # 2. Имя файла: первый отчет — <позывной>.cbr;
+    #    повторные подачи того же позывного — <позывной>_<N>.cbr,
+    #    где N — порядковый номер подачи.
+    if previous_count == 0:
+        file_name = f"{safe_callsign}.cbr"
+    else:
+        file_name = f"{safe_callsign}_{previous_count + 1}.cbr"
+    file_path = os.path.join(dir_path, file_name)
 
     # 3. Записываем исходный текст
     with open(file_path, 'w', encoding='utf-8', errors='ignore') as f:
@@ -242,7 +297,12 @@ def confirm_upload():
     # 4. Обновляем шапку сохраненной копии
     update_cabrillo_header(file_path, {
         'callsign': callsign,
+        'contest': contest,
         'location': location,
+        'name': name,
+        'address': address,
+        'email': email,
+        'club': club,
         'operators': operators
     })
     new_log.file_path = file_path

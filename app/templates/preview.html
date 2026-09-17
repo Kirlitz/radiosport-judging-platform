@@ -37,6 +37,8 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="hidden" name="contest_id" value="{{ contest.id }}">
         <input type="hidden" name="upload_token" value="{{ upload_token }}">
+        <!-- CONTEST заполняется/заменяется автоматически из PLUGIN_TITLE плагина -->
+        <input type="hidden" name="header_CONTEST" value="{{ contest_plugin_title or '' }}">
 
         {% if 'CALLSIGN' in missing_headers or not headers.get('CALLSIGN') %}
             <div class="warning-box">
@@ -83,7 +85,40 @@
         <div class="info-card">
             <h3>Регион / местоположение (LOCATION) (Район RDA или QTH-locator)</h3>
             <label><strong>Укажите или подтвердите ваш QTH:</strong></label>
-            <input type="text" name="operator_location" class="form-input" maxlength="150" placeholder="Например: PK" value="{{ headers.get('LOCATION', '') }}">
+            <input type="text" name="operator_location" class="form-input" maxlength="150" placeholder="Например: PK01" value="{{ headers.get('LOCATION', '') }}">
+        </div>
+
+        <!-- Шапка отчета: обязательные и факультативные поля -->
+        <div class="info-card" style="border-left: 5px solid #6f42c1;">
+            <h3>Шапка отчета (обязательные для заполнения поля отмечены *)
+                <small style="color: #6c757d;"> — CONTEST заполняется автоматически из плагина соревнования</small>
+            </h3>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                <div>
+                    <label><strong>NAME (ФИО оператора) *</strong></label>
+                    <input type="text" name="header_NAME" class="form-input" required maxlength="100"
+                           placeholder="Например: Иванов И.И."
+                           value="{{ headers.get('NAME', '') }}">
+                </div>
+                <div>
+                    <label><strong>EMAIL *</strong></label>
+                    <input type="email" name="header_EMAIL" class="form-input" required maxlength="150"
+                           placeholder="example@mail.ru"
+                           value="{{ headers.get('EMAIL', '') }}">
+                </div>
+                <div style="grid-column: 1 / -1;">
+                    <label><strong>ADDRESS (почтовый адрес) *</strong></label>
+                    <input type="text" name="header_ADDRESS" class="form-input" required maxlength="250"
+                           placeholder="Например: 690091, г. Владивосток, ул. Приморская, д.10, кв.25"
+                           value="{{ headers.get('ADDRESS', '') }}">
+                </div>
+                <div style="grid-column: 1 / -1;">
+                    <label><strong>CLUB (клуб / организация)</strong></label>
+                    <input type="text" name="header_CLUB" class="form-input" maxlength="200"
+                           placeholder="Необязательно"
+                           value="{{ headers.get('CLUB', '') }}">
+                </div>
+            </div>
         </div>
 
         <!-- Таблица операторов и форма их редактирования -->

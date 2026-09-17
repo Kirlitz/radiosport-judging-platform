@@ -1,6 +1,8 @@
 import re
 from datetime import datetime
 
+from app.utils import normalize_mode
+
 def freq_to_band(freq_str):
     """
     Универсальная нормализация диапазона. Корректно переводит 
@@ -92,7 +94,7 @@ def parse_cabrillo_file(file_path, my_callsign):
         if len(parts) < 10:  # Минимальное количество полей в Cabrillo/Ермак
             continue
         
-        freq, mode = parts[1], parts[2].upper()
+        freq, mode = parts[1], normalize_mode(parts[2])
         date_str, time_str = parts[3], parts[4]
         
         try:

@@ -341,6 +341,16 @@ def delete_log(log_id):
     flash(f'Отчет {callsign} (#{log.id}) удален.', 'success')
     return redirect(url_for('admin.logs_list', comp_id=comp_id))
 
+@admin_bp.route('/participants/<int:comp_id>')
+@permission_required('competitions.logs')
+def participants(comp_id):
+    """Список участников соревнования: позывной, ФИО, дата рождения, разряд, адрес, email.
+    Для станций с несколькими операторами — строки операторов выровнены друг под другом."""
+    comp = Competition.query.get_or_404(comp_id)
+    logs = get_official_logs(comp.id)
+    logs.sort(key=lambda lg: (lg.callsign or '').upper())
+    return render_template('admin_participants.html', comp=comp, logs=logs)
+
 @admin_bp.route('/judge/<int:comp_id>', methods=['POST'])
 @permission_required('competitions.judge')
 def judge_competition(comp_id):

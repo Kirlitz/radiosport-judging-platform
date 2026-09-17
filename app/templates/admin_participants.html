@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Участники: {{ comp.name }}</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 1200px; margin: 20px auto; padding: 0 15px; color: #333; }
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #dee2e6; padding-bottom: 15px; margin-bottom: 20px; }
+        .flashes { list-style: none; padding: 0; margin-bottom: 20px; }
+        .alert { padding: 12px 15px; border-radius: 4px; margin-bottom: 10px; font-weight: bold; }
+        .alert-success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .alert-danger { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .alert-warning { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #dee2e6; vertical-align: middle; }
+        th { background: #343a40; color: white; position: sticky; top: 0; }
+        .btn { padding: 6px 12px; border-radius: 4px; text-decoration: none; font-weight: bold; font-size: 13px; display: inline-block; border: 1px solid transparent; cursor: pointer; white-space: nowrap; }
+        .btn-secondary { background: #6c757d; color: white; }
+        .note { background: #e7f1ff; border-left: 5px solid #007bff; padding: 12px 15px; border-radius: 4px; margin-bottom: 15px; font-size: 14px; }
+        .callsign-cell { font-weight: bold; font-size: 15px; background: #f8f9fa; }
+        .op-fio { font-weight: bold; }
+        .op-secondary { color: #555; }
+        td.info-cell { background: #f8f9fa; }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h2>Участники: {{ comp.name }}</h2>
+        <a href="{{ url_for('admin.index') }}" class="btn btn-secondary">← К списку соревнований</a>
+    </div>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <ul class="flashes">
+        {% for category, message in messages %}
+          <li class="alert alert-{{ category if category != 'message' else 'info' }}">{{ message }}</li>
+        {% endfor %}
+        </ul>
+      {% endif %}
+    {% endwith %}
+
+    <div class="note">
+        Показаны официальные (последние) отчеты каждого позывного.
+        {% if logs %}Всего участников: <strong>{{ logs|length }}</strong>.{% endif %}
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th>№</th>
+                <th>Позывной</th>
+                <th>ФИО / Дата рождения</th>
+                <th>Спортивный разряд</th>
+                <th>Почтовый адрес</th>
+                <th>Email</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for log in logs %}
+                {% set ops = log.operators|list %}
+                {% set row_count = [ops|length, 1]|max %}
+                {% set station_index = loop.index %}
+                {% for op in ops %}
+                <tr>
+                    {% if loop.first %}
+                        <td rowspan="{{ row_count }}" style="text-align:center; vertical-align:middle;" class="info-cell">
+                            {{ station_index }}
+                        </td>
+                        <td rowspan="{{ row_count }}" class="callsign-cell info-cell">
+                            {{ log.callsign }}
+                        </td>
+                    {% endif %}
+                    <td>
+                        <span class="{% if not loop.first %}op-secondary{% else %}op-fio{% endif %}">
+                            {{ op.fio or '—' }}
+                        </span>
+                        {% if op.dob and op.dob != '-' %}<br><small style="color:#888;">{{ op.dob }}</small>{% endif %}
+                    </td>
+                    <td>
+                        {% if op.rank and op.rank != '-' %}
+                            <span class="{% if loop.first %}op-fio{% else %}op-secondary{% endif %}">{{ op.rank }}</span>
+                        {% else %}—{% endif %}
+                    </td>
+                    {% if loop.first %}
+                        <td rowspan="{{ row_count }}" style="vertical-align:middle;" class="info-cell">
+                            {{ log.address or '—' }}
+                        </td>
+                        <td rowspan="{{ row_count }}" style="vertical-align:middle;" class="info-cell">
+                            {% if log.email %}<a href="mailto:{{ log.email }}">{{ log.email }}</a>{% else %}—{% endif %}
+                        </td>
+                    {% endif %}
+                </tr>
+                {% else %}
+                {# Отчет без операторов — показываем строку-заглушку #}
+                <tr>
+                    <td style="text-align:center;" class="info-cell">{{ station_index }}</td>
+                    <td class="callsign-cell info-cell">{{ log.callsign }}</td>
+                    <td colspan="4" style="color:#888; font-style:italic;">Данные операторов отсутствуют</td>
+                </tr>
+                {% endfor %}
+            {% else %}
+            <tr>
+                <td colspan="6" style="text-align: center; color: #6c757d; padding: 20px;">Участников пока нет</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+</body>
+</html>
