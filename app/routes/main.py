@@ -1,15 +1,13 @@
-from flask import Blueprint, render_template, session, redirect, url_for
+from flask import Blueprint, render_template
 from app.models import Competition, ReceivedLog
 from app.utils import get_official_logs
+from app.auth import permission_required
 
 main_bp = Blueprint('main', __name__)
 
 @main_bp.route('/results/<int:comp_id>')
+@permission_required('competitions.export')
 def show_results(comp_id):
-    # Проверка: доступ только для авторизованных администраторов
-    if not session.get('admin_logged'):
-        return redirect(url_for('admin.login'))
-
     comp = Competition.query.get_or_404(comp_id)
     # Только официальные (последние) отчеты — дубли не попадают в протокол
     logs = get_official_logs(comp_id)

@@ -1,21 +1,34 @@
 import json
 import os
 import io
+import re
 import zipfile
 import importlib
 import shutil
 from datetime import datetime
 from collections import defaultdict
 from flask import Blueprint, render_template, request, redirect, url_for, session, flash, current_app, send_file, abort
-from app.models import db, Admin, Competition, ReceivedLog, QSO, Operator
+from app.models import db, User, Permission, UserPermission, Competition, ReceivedLog, QSO, Operator
+from app.auth import permission_required, get_current_user
 from app import limiter
-from werkzeug.security import check_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 from app.utils import get_official_logs
 import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill
 
 admin_bp = Blueprint('admin', __name__, url_prefix='/admin')
+
+# Логин: 3-50 символов, латинские буквы, цифры, "._-"
+USERNAME_RE = re.compile(r'^[A-Za-z0-9_.-]{3,50}$')
+
+# Учетные записи, которые нельзя удалить или лишить полных прав —
+# "запасной" доступ к панели при любых манипуляциях с правами.
+PROTECTED_USERNAMES = {'admin'}
+
+# Заглушка для выравнивания времени ответа при несуществующем логине
+# (защита от определения существования аккаунта по задержке).
+_DUMMY_HASH = generate_password_hash('invalid-password-placeholder-for-timing')
 
 def get_categories_list(categories_json):
     try:
@@ -121,56 +134,83 @@ def generate_ubn_text(log, comp):
     lines.append("-" * 85)
     return "\n".join(lines)
 
-@admin_bp.route('/')
-def index():
-    if not session.get('admin_logged'):
-        return redirect(url_for('admin.login'))
-    competitions = Competition.query.order_by(Competition.start_time.desc()).all()
-    return render_template('admin_index.html', competitions=competitions)
-
+# ---------------------------------------------------------------------------
+# Аутентификация
+# ---------------------------------------------------------------------------
 @admin_bp.route('/login', methods=['GET', 'POST'])
 @limiter.limit("5 per 15 minutes", methods=["POST"])
 def login():
     if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        admin = Admin.query.filter_by(username=username).first()
-        if admin and check_password_hash(admin.password_hash, password):
-            session['admin_logged'] = True
+        username = (request.form.get('username') or '').strip()
+        password = request.form.get('password') or ''
+        user = User.query.filter_by(username=username).first()
+
+        # Проверяем хэш и при несуществующем логине (заглушка), чтобы время
+        # ответа не выдавало, зарегистрирован ли такой пользователь.
+        hash_to_check = user.password_hash if user else _DUMMY_HASH
+        password_ok = check_password_hash(hash_to_check, password)
+
+        if user is None or not user.is_active or not password_ok:
+            flash('Неверный логин или пароль', 'danger')
+        else:
+            # session.clear() до установки данных — защита от фиксации сессии
+            session.clear()
+            session['user_id'] = user.id
+            session['username'] = user.username
+            user.last_login_at = datetime.now()
+            db.session.commit()
             flash('Успешный вход!', 'success')
             return redirect(url_for('admin.index'))
-        else:
-            flash('Неверный логин или пароль', 'danger')
     return render_template('admin_login.html')
 
-@admin_bp.route('/logout')
+@admin_bp.route('/logout', methods=['POST'])
 def logout():
-    session.pop('admin_logged', None)
+    session.clear()
+    flash('Вы вышли из системы.', 'info')
     return redirect(url_for('admin.login'))
 
+# ---------------------------------------------------------------------------
+# Соревнования
+# ---------------------------------------------------------------------------
+@admin_bp.route('/')
+@permission_required('competitions.view')
+def index():
+    competitions = Competition.query.order_by(Competition.start_time.desc()).all()
+    return render_template('admin_index.html', competitions=competitions)
+
+def _parse_competition_form():
+    """Разбор полей формы создания/редактирования соревнования."""
+    categories_list = [c.strip() for c in request.form.getlist('categories[]') if c.strip()]
+    bands_list = [b.strip() for b in request.form.getlist('bands[]') if isinstance(b, str) and b.strip()]
+    modes_list = [m.strip() for m in request.form.getlist('modes[]') if isinstance(m, str) and m.strip()]
+
+    block_starts = request.form.getlist('block_start[]')
+    block_ends = request.form.getlist('block_end[]')
+    divide_bys = request.form.getlist('divide_by[]')
+    divide_values = request.form.getlist('divide_value[]')
+
+    tours_list = []
+    for s, e, db_type, db_val in zip(block_starts, block_ends, divide_bys, divide_values):
+        if s and e and db_type in ('none', 'duration', 'count'):
+            tours_list.append({
+                'start': s,
+                'end': e,
+                'divide_by': db_type,
+                'divide_value': int(db_val) if db_val and db_val.isdigit() else 0
+            })
+
+    return {
+        'categories': categories_list,
+        'bands': bands_list,
+        'modes': modes_list,
+        'tours': tours_list,
+    }
+
 @admin_bp.route('/add', methods=['GET', 'POST'])
+@permission_required('competitions.create')
 def add_competition():
-    if not session.get('admin_logged'): return redirect(url_for('admin.login'))
-    
     if request.method == 'POST':
-        categories_list = [c.strip() for c in request.form.getlist('categories[]') if c.strip()]
-        bands_list = [b.strip() for b in request.form.getlist('bands[]') if isinstance(b, str) and b.strip()]
-        modes_list = [m.strip() for m in request.form.getlist('modes[]') if isinstance(m, str) and m.strip()]
-
-        block_starts = request.form.getlist('block_start[]')
-        block_ends = request.form.getlist('block_end[]')
-        divide_bys = request.form.getlist('divide_by[]')
-        divide_values = request.form.getlist('divide_value[]')
-
-        tours_list = []
-        for s, e, db_type, db_val in zip(block_starts, block_ends, divide_bys, divide_values):
-            if s and e and db_type in ('none', 'duration', 'count'):
-                tours_list.append({
-                    'start': s,
-                    'end': e,
-                    'divide_by': db_type,
-                    'divide_value': int(db_val) if db_val and db_val.isdigit() else 0
-                })
+        data = _parse_competition_form()
 
         new_comp = Competition(
             name=request.form.get('name'),
@@ -179,10 +219,10 @@ def add_competition():
             deadline_time=datetime.strptime(request.form.get('deadline_time'), '%Y-%m-%dT%H:%M'),
             time_delta_allowed=request.form.get('time_delta', type=int, default=3),
             scoring_script_filename=request.form.get('scoring_script_filename', 'primorye_hf'),
-            categories=json.dumps(categories_list, ensure_ascii=False),
-            tours=json.dumps(tours_list, ensure_ascii=False),
-            bands=json.dumps(bands_list, ensure_ascii=False),
-            modes=json.dumps(modes_list, ensure_ascii=False)
+            categories=json.dumps(data['categories'], ensure_ascii=False),
+            tours=json.dumps(data['tours'], ensure_ascii=False),
+            bands=json.dumps(data['bands'], ensure_ascii=False),
+            modes=json.dumps(data['modes'], ensure_ascii=False)
         )
         db.session.add(new_comp)
         db.session.commit()
@@ -193,29 +233,12 @@ def add_competition():
                            tours_data=[], bands_data=[], modes_data=[])
 
 @admin_bp.route('/edit/<int:comp_id>', methods=['GET', 'POST'])
+@permission_required('competitions.edit')
 def edit_competition(comp_id):
-    if not session.get('admin_logged'): return redirect(url_for('admin.login'))
     comp = Competition.query.get_or_404(comp_id)
     
     if request.method == 'POST':
-        categories_list = [c.strip() for c in request.form.getlist('categories[]') if c.strip()]
-        bands_list = [b.strip() for b in request.form.getlist('bands[]') if isinstance(b, str) and b.strip()]
-        modes_list = [m.strip() for m in request.form.getlist('modes[]') if isinstance(m, str) and m.strip()]
-
-        block_starts = request.form.getlist('block_start[]')
-        block_ends = request.form.getlist('block_end[]')
-        divide_bys = request.form.getlist('divide_by[]')
-        divide_values = request.form.getlist('divide_value[]')
-
-        tours_list = []
-        for s, e, db_type, db_val in zip(block_starts, block_ends, divide_bys, divide_values):
-            if s and e and db_type in ('none', 'duration', 'count'):
-                tours_list.append({
-                    'start': s,
-                    'end': e,
-                    'divide_by': db_type,
-                    'divide_value': int(db_val) if db_val and db_val.isdigit() else 0
-                })
+        data = _parse_competition_form()
         
         comp.name = request.form.get('name')
         comp.start_time = datetime.strptime(request.form.get('start_time'), '%Y-%m-%dT%H:%M')
@@ -224,10 +247,10 @@ def edit_competition(comp_id):
         comp.time_delta_allowed = request.form.get('time_delta', type=int, default=3)
         comp.scoring_script_filename = request.form.get('scoring_script_filename', 'primorye_hf')
         
-        comp.categories = json.dumps(categories_list, ensure_ascii=False)
-        comp.tours = json.dumps(tours_list, ensure_ascii=False)
-        comp.bands = json.dumps(bands_list, ensure_ascii=False)
-        comp.modes = json.dumps(modes_list, ensure_ascii=False)
+        comp.categories = json.dumps(data['categories'], ensure_ascii=False)
+        comp.tours = json.dumps(data['tours'], ensure_ascii=False)
+        comp.bands = json.dumps(data['bands'], ensure_ascii=False)
+        comp.modes = json.dumps(data['modes'], ensure_ascii=False)
         
         db.session.commit()
         return redirect(url_for('admin.index'))
@@ -241,10 +264,8 @@ def edit_competition(comp_id):
                            tours_data=tours_data, bands_data=bands_data, modes_data=modes_data)
 
 @admin_bp.route('/delete/<int:comp_id>', methods=['POST'])
+@permission_required('competitions.delete')
 def delete_competition(comp_id):
-    if not session.get('admin_logged'): 
-        return redirect(url_for('admin.login'))
-    
     comp = Competition.query.get_or_404(comp_id)
     
     logs = ReceivedLog.query.filter_by(competition_id=comp.id).all()
@@ -271,15 +292,18 @@ def delete_competition(comp_id):
     db.session.delete(comp)
     db.session.commit()
     
+    current_app.logger.warning(
+        "Соревнование #%s удалено администратором %s",
+        comp.id, get_current_user().username
+    )
     flash('Соревнование, все отчеты, операторы и файлы физически удалены.', 'success')
     return redirect(url_for('admin.index'))
 
 @admin_bp.route('/logs/<int:comp_id>')
+@permission_required('competitions.logs')
 def logs_list(comp_id):
     """Список ВСЕХ поданных отчетов соревнования (включая дубли).
     Официальным считается последний по времени — именно он участвует в судействе."""
-    if not session.get('admin_logged'):
-        return redirect(url_for('admin.login'))
     comp = Competition.query.get_or_404(comp_id)
     logs = ReceivedLog.query.filter_by(competition_id=comp.id).order_by(
         ReceivedLog.upload_time.asc(), ReceivedLog.id.asc()
@@ -288,11 +312,10 @@ def logs_list(comp_id):
     return render_template('admin_logs.html', comp=comp, logs=logs, official_ids=official_ids)
 
 @admin_bp.route('/delete_log/<int:log_id>', methods=['POST'])
+@permission_required('competitions.logs')
 def delete_log(log_id):
     """Удаление одной подачи: файл + связи + операторы + запись.
     Остальные отчеты (в том числе дубли других участников) не затрагиваются."""
-    if not session.get('admin_logged'):
-        return redirect(url_for('admin.login'))
     log = ReceivedLog.query.get_or_404(log_id)
     comp_id = log.competition_id
     callsign = log.callsign
@@ -312,8 +335,8 @@ def delete_log(log_id):
     return redirect(url_for('admin.logs_list', comp_id=comp_id))
 
 @admin_bp.route('/judge/<int:comp_id>', methods=['POST'])
+@permission_required('competitions.judge')
 def judge_competition(comp_id):
-    if not session.get('admin_logged'): return redirect(url_for('admin.login'))
     comp = Competition.query.get_or_404(comp_id)
     script_name = comp.scoring_script_filename
     
@@ -337,10 +360,8 @@ def judge_competition(comp_id):
     return redirect(url_for('admin.index'))
 
 @admin_bp.route('/download_ubn/<int:comp_id>')
+@permission_required('competitions.export')
 def download_ubn_archive(comp_id):
-    if not session.get('admin_logged'):
-        return redirect(url_for('admin.login'))
-        
     comp = Competition.query.get_or_404(comp_id)
     logs = get_official_logs(comp.id)
 
@@ -368,10 +389,8 @@ def download_ubn_archive(comp_id):
     )
 
 @admin_bp.route('/export_excel/<int:comp_id>')
+@permission_required('competitions.export')
 def export_excel(comp_id):
-    if not session.get('admin_logged'):
-        return redirect(url_for('admin.login'))
-
     comp = Competition.query.get_or_404(comp_id)
     
     if not comp.is_judged:
@@ -460,3 +479,236 @@ def export_excel(comp_id):
         download_name=f"results_{comp.id}.xlsx",
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
+# ---------------------------------------------------------------------------
+# Управление пользователями
+# ---------------------------------------------------------------------------
+def _validate_username(username, exclude_user=None):
+    if not username:
+        return 'Логин не может быть пустым.'
+    if not USERNAME_RE.match(username):
+        return 'Логин: 3-50 символов, допускаются латинские буквы, цифры, "._-".'
+    query = User.query.filter_by(username=username)
+    if exclude_user is not None:
+        query = query.filter(User.id != exclude_user.id)
+    if query.first():
+        return f'Пользователь "{username}" уже существует.'
+    return None
+
+
+def _validate_new_password(password, confirm):
+    min_len = current_app.config.get('MIN_PASSWORD_LENGTH', 8)
+    if password != confirm:
+        return 'Пароли не совпадают.'
+    if len(password) < min_len:
+        return f'Пароль слишком короткий: минимум {min_len} символов.'
+    return None
+
+
+def _sync_permissions(user, wanted_codes):
+    """Приводит набор прав пользователя к переданному списку (с фильтром по справочнику)."""
+    allowed = {p.code for p in Permission.query.all()}
+    wanted = set(wanted_codes) & allowed
+    current = {up.permission_code for up in user.user_permissions}
+
+    for code in wanted - current:
+        db.session.add(UserPermission(user_id=user.id, permission_code=code))
+    for up in list(user.user_permissions):
+        if up.permission_code not in wanted:
+            db.session.delete(up)
+
+
+def _guard_superuser_removal(target):
+    """Проверки перед лишением полных прав / деактивацией / удалением суперпользователя."""
+    actor = get_current_user()
+    if target.id == actor.id:
+        return 'Нельзя изменить статус самого себя.'
+    if target.username in PROTECTED_USERNAMES:
+        return f'Нельзя лишить полных прав защищенного администратора "{target.username}".'
+    if target.is_superuser and User.query.filter_by(is_superuser=True).count() <= 1:
+        return 'Нельзя лишить полных прав последнего суперпользователя.'
+    return None
+
+
+def _guard_user_delete(target):
+    actor = get_current_user()
+    if target.id == actor.id:
+        return 'Нельзя удалить самого себя.'
+    if target.username in PROTECTED_USERNAMES:
+        return f'Нельзя удалить защищенного администратора "{target.username}".'
+    if target.is_superuser and User.query.filter_by(is_superuser=True).count() <= 1:
+        return 'Нельзя удалить последнего суперпользователя.'
+    return None
+
+
+def _form_data_for(user, form=None):
+    """Значения полей для формы: при ошибке берем из form, иначе из объекта."""
+    if form is not None:
+        return {
+            'username': form.get('username', ''),
+            'is_active': form.get('is_active') == 'on',
+            'is_superuser': form.get('is_superuser') == 'on',
+            'permissions': set(form.getlist('permissions[]')),
+        }
+    if user is None:
+        return {'username': '', 'is_active': True, 'is_superuser': False, 'permissions': set()}
+    return {
+        'username': user.username,
+        'is_active': user.is_active,
+        'is_superuser': user.is_superuser,
+        'permissions': user.permission_codes(),
+    }
+
+
+def _render_user_form(user, form_data, error_code=200):
+    permissions = Permission.query.order_by(Permission.code).all()
+    can_manage_permissions = get_current_user().has_permission('users.permissions')
+    return render_template(
+        'admin_user_edit.html',
+        user=user,
+        permissions=permissions,
+        form_data=form_data,
+        can_manage_permissions=can_manage_permissions,
+    ), error_code
+
+
+@admin_bp.route('/users')
+@permission_required('users.view')
+def users():
+    user_list = User.query.order_by(
+        User.is_superuser.desc(), User.username.asc()
+    ).all()
+    return render_template('admin_users.html', users=user_list)
+
+
+@admin_bp.route('/users/create', methods=['GET', 'POST'])
+@permission_required('users.create')
+@limiter.limit("20 per hour", methods=["POST"])
+def user_create():
+    if request.method == 'POST':
+        form = request.form
+        username = (form.get('username') or '').strip()
+        password = form.get('password') or ''
+        password2 = form.get('password_confirm') or ''
+
+        error = _validate_username(username) or _validate_new_password(password, password2)
+        if error:
+            flash(error, 'danger')
+            return _render_user_form(None, _form_data_for(None, form), 400)
+
+        user = User(username=username, password_hash=generate_password_hash(password))
+        db.session.add(user)
+        db.session.flush()
+
+        actor = get_current_user()
+        if actor.has_permission('users.permissions'):
+            if form.get('is_superuser') == 'on':
+                user.is_superuser = True
+            _sync_permissions(user, form.getlist('permissions[]'))
+
+        db.session.commit()
+        current_app.logger.warning(
+            "Пользователь '%s' создан администратором %s (superuser=%s)",
+            username, actor.username, user.is_superuser,
+        )
+        flash(f'Пользователь "{username}" создан.', 'success')
+        return redirect(url_for('admin.users'))
+
+    return _render_user_form(None, _form_data_for(None))
+
+
+@admin_bp.route('/users/<int:user_id>/edit', methods=['GET', 'POST'])
+@permission_required('users.edit')
+def user_edit(user_id):
+    target = User.query.get_or_404(user_id)
+    actor = get_current_user()
+
+    if request.method == 'POST':
+        form = request.form
+        new_username = (form.get('username') or '').strip()
+        password = form.get('password') or ''
+        password2 = form.get('password_confirm') or ''
+
+        error = _validate_username(new_username, exclude_user=target)
+        if not error and password:
+            error = _validate_new_password(password, password2)
+        if error:
+            flash(error, 'danger')
+            return _render_user_form(target, _form_data_for(target, form), 400)
+
+        changes = []
+        if new_username != target.username:
+            changes.append(f'логин → "{new_username}"')
+        target.username = new_username
+
+        if password:
+            target.password_hash = generate_password_hash(password)
+            changes.append('пароль')
+
+        # Активность можно менять, только если это не лишает систему
+        # единственного действующего суперпользователя.
+        new_active = form.get('is_active') == 'on'
+        if new_active != target.is_active:
+            if not new_active:
+                guard = _guard_superuser_removal(target)
+                if guard:
+                    flash(guard, 'danger')
+                else:
+                    target.is_active = False
+                    changes.append('деактивация')
+            else:
+                target.is_active = True
+                changes.append('активация')
+
+        # Полные права и набор разрешений может менять только тот,
+        # у кого есть право users.permissions.
+        if actor.has_permission('users.permissions'):
+            new_super = form.get('is_superuser') == 'on'
+            if new_super != target.is_superuser:
+                if not new_super:
+                    guard = _guard_superuser_removal(target)
+                    if guard:
+                        flash(guard, 'danger')
+                    else:
+                        target.is_superuser = False
+                        changes.append('лишение полных прав')
+                else:
+                    target.is_superuser = True
+                    changes.append('выдача полных прав')
+            _sync_permissions(target, form.getlist('permissions[]'))
+
+        if changes:
+            db.session.commit()
+            current_app.logger.warning(
+                "Изменения пользователя '%s' администратором %s: %s",
+                target.username, actor.username, ', '.join(changes),
+            )
+            flash(f'Пользователь "{new_username}" обновлен: ' + ', '.join(changes) + '.', 'success')
+        else:
+            db.session.commit()
+            flash('Изменений не внесено.', 'info')
+        return redirect(url_for('admin.users'))
+
+    return _render_user_form(target, _form_data_for(target))
+
+
+@admin_bp.route('/users/<int:user_id>/delete', methods=['POST'])
+@permission_required('users.delete')
+def user_delete(user_id):
+    target = User.query.get_or_404(user_id)
+
+    guard = _guard_user_delete(target)
+    if guard:
+        flash(guard, 'danger')
+        return redirect(url_for('admin.users'))
+
+    username = target.username
+    actor = get_current_user()
+    db.session.delete(target)
+    db.session.commit()
+    current_app.logger.warning(
+        "Пользователь '%s' удален администратором %s",
+        username, actor.username,
+    )
+    flash(f'Пользователь "{username}" удален.', 'success')
+    return redirect(url_for('admin.users'))

@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Доступ запрещен</title>
+    <style>
+        body { font-family: sans-serif; max-width: 480px; margin: 120px auto; padding: 20px; text-align: center; color: #495057; }
+        h1 { font-size: 48px; margin: 0; color: #dc3545; }
+        .links { margin-top: 24px; }
+        a, button { padding: 8px 16px; border-radius: 4px; text-decoration: none; font-weight: bold; border: none; cursor: pointer; background: #007bff; color: white; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <h1>403</h1>
+    <p>Доступ запрещен: у вас нет прав для выполнения этого действия.</p>
+    <div class="links">
+        {% if current_user %}
+            <a href="{{ url_for('admin.index') }}">В панель администратора</a>
+        {% else %}
+            <a href="{{ url_for('admin.login') }}">Войти</a>
+        {% endif %}
+    </div>
+</body>
+</html>

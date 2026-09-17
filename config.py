@@ -17,7 +17,16 @@ class Config:
 
     # Добавлен timeout=20 для избежания ошибки "database is locked" при конкурентных запросах
     SQLALCHEMY_DATABASE_URI = 'sqlite:///' + os.path.join(BASE_DIR, 'data', 'judging.db') + '?timeout=20'
+
+    # Отдельная база пользователей: если потребуется удалить базу соревнований
+    # (judging.db), учетные записи администраторов и судей не потеряются.
+    SQLALCHEMY_BINDS = {
+        'users': 'sqlite:///' + os.path.join(BASE_DIR, 'data', 'users.db') + '?timeout=20'
+    }
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+
+    # Минимальная длина пароля при создании/изменении учетной записи
+    MIN_PASSWORD_LENGTH = 8
 
     # Файлы хранятся ВНЕ папки static, чтобы исключить прямое скачивание
     UPLOAD_FOLDER = os.path.join(BASE_DIR, 'data', 'logs')

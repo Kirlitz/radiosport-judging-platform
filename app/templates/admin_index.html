@@ -6,6 +6,8 @@
     <style>
         body { font-family: Arial, sans-serif; max-width: 1200px; margin: 20px auto; padding: 0 15px; color: #333; }
         .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #dee2e6; padding-bottom: 15px; margin-bottom: 20px; }
+        .header-right { display: flex; align-items: center; gap: 8px; }
+        .username { color: #6c757d; font-size: 14px; margin-right: 8px; }
         
         /* Всплывающие уведомления Flash */
         .flashes { list-style: none; padding: 0; margin-bottom: 20px; }
@@ -13,6 +15,7 @@
         .alert-success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
         .alert-danger { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
         .alert-warning { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+        .alert-info { background-color: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
 
         table { width: 100%; border-collapse: collapse; margin-top: 15px; }
         th, td { padding: 12px; text-align: left; border-bottom: 1px solid #dee2e6; vertical-align: middle; }
@@ -41,9 +44,23 @@
 
     <div class="header">
         <h2>Управление соревнованиями</h2>
-        <div>
-            <a href="{{ url_for('admin.add_competition') }}" class="btn btn-success">+ Создать соревнование</a>
-            <a href="{{ url_for('admin.logout') }}" class="btn btn-secondary">Выход</a>
+        <div class="header-right">
+            {% if current_user %}
+                <span class="username">Вы вошли как: <strong>{{ current_user.username }}</strong></span>
+            {% endif %}
+
+            {% if current_user and (current_user.is_superuser or current_user.has_permission('users.view')) %}
+                <a href="{{ url_for('admin.users') }}" class="btn btn-primary">Управление пользователями</a>
+            {% endif %}
+
+            {% if current_user and (current_user.is_superuser or current_user.has_permission('competitions.create')) %}
+                <a href="{{ url_for('admin.add_competition') }}" class="btn btn-success">+ Создать соревнование</a>
+            {% endif %}
+
+            <form action="{{ url_for('admin.logout') }}" method="POST" style="display:inline;">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-secondary">Выход</button>
+            </form>
         </div>
     </div>
 
@@ -83,22 +100,32 @@
                 </td>
                 <td>
                     <div class="actions">
-                        {% if comp.is_judged %}
+                        {% if current_user and (current_user.is_superuser or current_user.has_permission('competitions.export')) and comp.is_judged %}
                             <a href="{{ url_for('main.show_results', comp_id=comp.id) }}" class="btn btn-info">Результаты</a>
                             <a href="{{ url_for('admin.download_ubn_archive', comp_id=comp.id) }}" class="btn btn-ubn" title="Скачать протоколы UBN участников в ZIP">📦 UBN (ZIP)</a>
                         {% endif %}
                         
-                        <form action="{{ url_for('admin.judge_competition', comp_id=comp.id) }}" method="POST" style="display:inline;" onsubmit="return confirm('Запустить перекрестную проверку?');">
-                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                            <button type="submit" class="btn btn-primary">{% if comp.is_judged %}Пересудить{% else %}Судить{% endif %}</button>
-                        </form>
+                        {% if current_user and (current_user.is_superuser or current_user.has_permission('competitions.judge')) %}
+                            <form action="{{ url_for('admin.judge_competition', comp_id=comp.id) }}" method="POST" style="display:inline;" onsubmit="return confirm('Запустить перекрестную проверку?');">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit" class="btn btn-primary">{% if comp.is_judged %}Пересудить{% else %}Судить{% endif %}</button>
+                            </form>
+                        {% endif %}
 
-                        <a href="{{ url_for('admin.logs_list', comp_id=comp.id) }}" class="btn btn-primary">Отчеты</a>
-                        <a href="{{ url_for('admin.edit_competition', comp_id=comp.id) }}" class="btn btn-warning">Изменить</a>
-                        <form action="{{ url_for('admin.delete_competition', comp_id=comp.id) }}" method="POST" style="display:inline;">
-                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                            <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Вы уверены, что хотите удалить соревнование и все его логи?');">Удалить</button>
-                        </form>
+                        {% if current_user and (current_user.is_superuser or current_user.has_permission('competitions.logs')) %}
+                            <a href="{{ url_for('admin.logs_list', comp_id=comp.id) }}" class="btn btn-primary">Отчеты</a>
+                        {% endif %}
+
+                        {% if current_user and (current_user.is_superuser or current_user.has_permission('competitions.edit')) %}
+                            <a href="{{ url_for('admin.edit_competition', comp_id=comp.id) }}" class="btn btn-warning">Изменить</a>
+                        {% endif %}
+
+                        {% if current_user and (current_user.is_superuser or current_user.has_permission('competitions.delete')) %}
+                            <form action="{{ url_for('admin.delete_competition', comp_id=comp.id) }}" method="POST" style="display:inline;">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Вы уверены, что хотите удалить соревнование и все его логи?');">Удалить</button>
+                            </form>
+                        {% endif %}
                     </div>
                 </td>
             </tr>

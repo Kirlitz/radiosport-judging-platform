@@ -3,11 +3,69 @@ from flask_sqlalchemy import SQLAlchemy
 
 db = SQLAlchemy()
 
-class Admin(db.Model):
+# ---------------------------------------------------------------------------
+# Модели базы ПОЛЬЗОВАТЕЛЕЙ (отдельный файл data/users.db).
+# Учетные записи администраторов и судей хранятся отдельно от данных
+# соревнований, чтобы удаление базы соревнований не лишало доступа к панели.
+# Все модели используют __bind_key__ = 'users'.
+# ---------------------------------------------------------------------------
+class User(db.Model):
+    __bind_key__ = 'users'
+    __tablename__ = 'user'
+
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(50), unique=True, nullable=False)
     # ИЗМЕНЕНО: 255 символов для совместимости с современными алгоритмами (scrypt, pbkdf2)
     password_hash = db.Column(db.String(255), nullable=False)
+
+    # is_superuser — полные права без перечисления отдельных разрешений
+    # (устанавливаются у записей admin и ua0lid)
+    is_superuser = db.Column(db.Boolean, default=False, nullable=False)
+    # is_active — блокировка учетной записи без ее удаления
+    is_active = db.Column(db.Boolean, default=True, nullable=False)
+
+    created_at = db.Column(db.DateTime, default=db.func.now(), nullable=False)
+    last_login_at = db.Column(db.DateTime, nullable=True)
+
+    user_permissions = db.relationship(
+        'UserPermission',
+        backref='user',
+        lazy=True,
+        cascade='all, delete-orphan'
+    )
+
+    def has_permission(self, code):
+        """Проверка права. Суперпользователь пропускает любые проверки."""
+        if self.is_superuser:
+            return True
+        return any(up.permission_code == code for up in self.user_permissions)
+
+    def permission_codes(self):
+        return {up.permission_code for up in self.user_permissions}
+
+
+class Permission(db.Model):
+    """Справочник доступных прав (перечень легко расширяется новыми записями)."""
+    __bind_key__ = 'users'
+    __tablename__ = 'permission'
+
+    code = db.Column(db.String(64), primary_key=True)
+    description = db.Column(db.String(255), nullable=False)
+
+
+class UserPermission(db.Model):
+    """Связь пользователя с правами. Расширяемая модель прав пользователей."""
+    __bind_key__ = 'users'
+    __tablename__ = 'user_permission'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False, index=True)
+    permission_code = db.Column(db.String(64), db.ForeignKey('permission.code', ondelete='CASCADE'), nullable=False)
+
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'permission_code', name='uq_user_permission'),
+    )
+
 
 class Competition(db.Model):
     id = db.Column(db.Integer, primary_key=True)

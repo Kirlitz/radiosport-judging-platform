@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Управление пользователями</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 1000px; margin: 20px auto; padding: 0 15px; color: #333; }
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #dee2e6; padding-bottom: 15px; margin-bottom: 20px; }
+        .header-right { display: flex; align-items: center; gap: 8px; }
+        .username { color: #6c757d; font-size: 14px; margin-right: 8px; }
+
+        .flashes { list-style: none; padding: 0; margin-bottom: 20px; }
+        .alert { padding: 12px 15px; border-radius: 4px; margin-bottom: 10px; font-weight: bold; }
+        .alert-success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .alert-danger { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .alert-warning { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+        .alert-info { background-color: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #dee2e6; vertical-align: middle; }
+        th { background: #f8f9fa; }
+
+        .btn { padding: 6px 12px; border-radius: 4px; text-decoration: none; font-weight: bold; font-size: 13px; display: inline-block; border: 1px solid transparent; cursor: pointer; white-space: nowrap; }
+        .btn-success { background: #28a745; color: white; }
+        .btn-primary { background: #007bff; color: white; }
+        .btn-warning { background: #ffc107; color: #212529; }
+        .btn-danger { background: #dc3545; color: white; }
+        .btn-secondary { background: #6c757d; color: white; }
+
+        .status-badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; display: inline-block; }
+        .badge-success { background: #d4edda; color: #155724; }
+        .badge-danger { background: #f8d7da; color: #721c24; }
+        .badge-primary { background: #cfe2ff; color: #084298; }
+        .badge-secondary { background: #e2e3e5; color: #383d41; }
+        .actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h2>Управление пользователями</h2>
+        <div class="header-right">
+            {% if current_user %}
+                <span class="username">Вы вошли как: <strong>{{ current_user.username }}</strong></span>
+            {% endif %}
+
+            {% if current_user and (current_user.is_superuser or current_user.has_permission('competitions.view')) %}
+                <a href="{{ url_for('admin.index') }}" class="btn btn-secondary">Соревнования</a>
+            {% endif %}
+
+            <form action="{{ url_for('admin.logout') }}" method="POST" style="display:inline;">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-secondary">Выход</button>
+            </form>
+        </div>
+    </div>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <ul class="flashes">
+        {% for category, message in messages %}
+          <li class="alert alert-{{ category if category != 'message' else 'info' }}">{{ message }}</li>
+        {% endfor %}
+        </ul>
+      {% endif %}
+    {% endwith %}
+
+    {% if current_user and (current_user.is_superuser or current_user.has_permission('users.create')) %}
+        <a href="{{ url_for('admin.user_create') }}" class="btn btn-success">+ Создать пользователя</a>
+    {% endif %}
+
+    <table>
+        <thead>
+            <tr>
+                <th>Логин</th>
+                <th>Статус</th>
+                <th>Права</th>
+                <th>Последний вход</th>
+                <th>Создан</th>
+                <th>Действия</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for u in users %}
+            <tr>
+                <td>
+                    <strong>{{ u.username }}</strong>
+                    {% if u.username == 'admin' and u.is_superuser %}
+                        <span class="status-badge badge-primary" title="Основной аккаунт администратора">защищен</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if u.is_active %}
+                        <span class="status-badge badge-success">Активен</span>
+                    {% else %}
+                        <span class="status-badge badge-danger">Заблокирован</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if u.is_superuser %}
+                        <span class="status-badge badge-primary">Полные права</span>
+                    {% else %}
+                        <span class="status-badge badge-secondary">{{ u.user_permissions|length }} прав</span>
+                    {% endif %}
+                </td>
+                <td>{{ u.last_login_at.strftime('%d.%m.%Y %H:%M') if u.last_login_at else '—' }}</td>
+                <td>{{ u.created_at.strftime('%d.%m.%Y %H:%M') if u.created_at else '—' }}</td>
+                <td>
+                    <div class="actions">
+                        {% if current_user and (current_user.is_superuser or current_user.has_permission('users.edit')) %}
+                            <a href="{{ url_for('admin.user_edit', user_id=u.id) }}" class="btn btn-warning">Изменить</a>
+                        {% endif %}
+
+                        {% if current_user and (current_user.is_superuser or current_user.has_permission('users.delete')) %}
+                            <form action="{{ url_for('admin.user_delete', user_id=u.id) }}" method="POST" style="display:inline;">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit" class="btn btn-danger" onclick="return confirm('Удалить пользователя {{ u.username }}?');">Удалить</button>
+                            </form>
+                        {% endif %}
+                    </div>
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="6" style="text-align: center; color: #6c757d; padding: 20px;">Пользователей пока нет</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+</body>
+</html>

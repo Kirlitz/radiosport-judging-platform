@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>{% if user %}Редактирование пользователя{% else %}Создание пользователя{% endif %}</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 0 15px; color: #333; }
+        .card { background: white; padding: 25px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        input[type=text], input[type=password] { width: 100%; padding: 8px; box-sizing: border-box; }
+        .hint { color: #777; font-size: 12px; margin-top: 3px; }
+        .perm-group { margin-bottom: 5px; }
+        .perm-group input { margin-right: 8px; }
+        .perm-block { border: 1px solid #dee2e6; border-radius: 6px; padding: 12px; margin-top: 8px; }
+        .btn { padding: 8px 16px; border-radius: 4px; border: none; font-weight: bold; cursor: pointer; text-decoration: none; display: inline-block; }
+        .btn-primary { background: #007bff; color: white; }
+        .btn-secondary { background: #6c757d; color: white; }
+        .flashes { list-style: none; padding: 0; margin-bottom: 20px; }
+        .alert { padding: 12px 15px; border-radius: 4px; margin-bottom: 10px; font-weight: bold; }
+        .alert-danger { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .alert-success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .alert-info { background-color: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+        .alert-warning { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+        .note { background: #e9ecef; border-radius: 6px; padding: 10px 12px; color: #495057; font-size: 13px; }
+    </style>
+</head>
+<body>
+
+    <div class="card">
+        <h2>{% if user %}Редактирование пользователя{% else %}Создание пользователя{% endif %}</h2>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            <ul class="flashes">
+            {% for category, message in messages %}
+              <li class="alert alert-{{ category if category != 'message' else 'info' }}">{{ message }}</li>
+            {% endfor %}
+            </ul>
+          {% endif %}
+        {% endwith %}
+
+        <form method="POST">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+            <div class="form-group">
+                <label>Логин:</label>
+                <input type="text" name="username" value="{{ form_data.username }}" required
+                       pattern="[A-Za-z0-9_.-]{3,50}" minlength="3" maxlength="50">
+                <div class="hint">3-50 символов: латинские буквы, цифры, «._-»</div>
+            </div>
+
+            <div class="form-group">
+                <label>Пароль:</label>
+                <input type="password" name="password" autocomplete="new-password">
+                <div class="hint">
+                    {% if user %}
+                        Оставьте пустым, чтобы не менять пароль. Минимум {{ config.MIN_PASSWORD_LENGTH }} символов.
+                    {% else %}
+                        Минимум {{ config.MIN_PASSWORD_LENGTH }} символов.
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Повтор пароля:</label>
+                <input type="password" name="password_confirm" autocomplete="new-password">
+            </div>
+
+            <div class="form-group">
+                <label>
+                    <input type="checkbox" name="is_active" {% if form_data.is_active %}checked{% endif %}> Аккаунт активен
+                </label>
+                <div class="hint">Снимите галочку, чтобы временно заблокировать доступ без удаления записи.</div>
+            </div>
+
+            {% if can_manage_permissions %}
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" name="is_superuser" {% if form_data.is_superuser %}checked{% endif %}> Полные права (суперпользователь)
+                    </label>
+                    <div class="hint">Суперпользователю доступны все действия без перечисления прав.</div>
+                </div>
+
+                <div class="form-group">
+                    <label>Права пользователя:</label>
+                    <div class="perm-block">
+                        {% for perm in permissions %}
+                            <div class="perm-group">
+                                <label style="font-weight: normal; display: block;">
+                                    <input type="checkbox" name="permissions[]" value="{{ perm.code }}"
+                                           {% if perm.code in form_data.permissions %}checked{% endif %}>
+                                    <code>{{ perm.code }}</code> — {{ perm.description }}
+                                </label>
+                            </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            {% else %}
+                <div class="note">
+                    У вас нет права «Назначение и отзыв прав» — полные права и набор разрешений недоступны для изменения.
+                </div>
+            {% endif %}
+
+            <div style="margin-top: 20px; display: flex; gap: 8px;">
+                <button type="submit" class="btn btn-primary">
+                    {% if user %}Сохранить{% else %}Создать{% endif %}
+                </button>
+                <a href="{{ url_for('admin.users') }}" class="btn btn-secondary">Отмена</a>
+            </div>
+        </form>
+    </div>
+
+</body>
+</html>

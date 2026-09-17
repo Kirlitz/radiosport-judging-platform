@@ -22,3 +22,5 @@ Thumbs.db
 # Логи
 logs/
 *.log
+
+SECURITY_REPORT.md

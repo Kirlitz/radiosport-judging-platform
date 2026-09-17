@@ -1,7 +1,7 @@
 import ipaddress
 import os
 
-from flask import Flask, request
+from flask import Flask, request, render_template
 from flask_wtf import CSRFProtect
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -78,6 +78,25 @@ def create_app(config_class=Config):
     # Инициализируем базу данных для этого приложения
     db.init_app(app)
 
+    # Безопасные HTTP-заголовки на все ответы
+    @app.after_request
+    def set_security_headers(response):
+        response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+        response.headers.setdefault('X-Frame-Options', 'DENY')
+        response.headers.setdefault('Referrer-Policy', 'same-origin')
+        return response
+
+    # Доступ в шаблонах к текущему пользователю (для показа ссылок и кнопок
+    # в зависимости от прав).
+    @app.context_processor
+    def inject_current_user():
+        from app.auth import get_current_user
+        return {'current_user': get_current_user()}
+
+    @app.errorhandler(403)
+    def forbidden(e):
+        return render_template('403.html'), 403
+
     # Импортируем Blueprints (модули маршрутов)
     from app.routes.user import user_bp
     from app.routes.admin import admin_bp
@@ -88,8 +107,62 @@ def create_app(config_class=Config):
     app.register_blueprint(admin_bp)
     app.register_blueprint(main_bp)
     
-    # Создаем таблицы в базе данных (если их еще нет)
+    # Создаем таблицы в базе данных (если их еще нет).
+    # db.create_all() создает таблицы во всех привязках: соревнования —
+    # в judging.db, пользователи (User/Permission/UserPermission) — в users.db.
     with app.app_context():
         db.create_all()
+        seed_users_db(app)
 
     return app
+
+
+def seed_users_db(app):
+    """Одноразовая подготовка базы пользователей.
+
+    1. Наполняет справочник прав (Permission) каталогом по умолчанию.
+    2. Если users.db пуст, а в judging.db остались аккаунты из старой
+       таблицы admin (до разделения баз), переносит их как суперпользователей
+       с полными правами. Признаки: admin и ua0lid.
+    """
+    from sqlalchemy import inspect
+    from app.auth import seed_default_permissions
+    from app.models import User, UserPermission, Permission
+
+    seed_default_permissions()
+
+    try:
+        inspector = inspect(db.engine)
+        if 'admin' not in inspector.get_table_names():
+            return
+        if User.query.count() > 0:
+            return
+
+        rows = db.session.execute(
+            db.text("SELECT id, username, password_hash FROM admin")
+        ).fetchall()
+        if not rows:
+            return
+
+        all_codes = {p.code for p in Permission.query.all()}
+        for row in rows:
+            if not row.username or not row.password_hash:
+                continue
+            user = User(
+                username=row.username,
+                password_hash=row.password_hash,
+                is_superuser=True,
+                is_active=True,
+            )
+            db.session.add(user)
+            db.session.flush()
+            for code in all_codes:
+                db.session.add(UserPermission(user_id=user.id, permission_code=code))
+            app.logger.info(
+                "Аккаунт '%s' перенесен из judging.db в users.db (полные права)",
+                row.username,
+            )
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        app.logger.exception("Не удалось перенести старых администраторов в users.db")
