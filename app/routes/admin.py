@@ -9,6 +9,7 @@ from datetime import datetime
 from collections import defaultdict
 from flask import Blueprint, render_template, request, redirect, url_for, session, flash, current_app, send_file, abort
 from app.models import db, User, Permission, UserPermission, Competition, ReceivedLog, QSO, Operator
+from app.cabrillo import parse_cabrillo_file
 from app.auth import permission_required, get_current_user, generate_session_token, hash_session_token
 from app import limiter, _client_ip
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -413,26 +414,26 @@ def participants(comp_id):
 @permission_required('competitions.logs')
 def missing_participants(comp_id):
     """Отсутствующие: корреспонденты, которых упоминали в отчетах, но сами отчет не прислали.
-    Первый столбец — позывной, второй — в скольких официальных отчетах он упоминается."""
+    Первый столбец — позывной, второй — в скольких официальных отчетах он упоминается.
+    Работает по сохраненным файлам отчетов, не требуя предварительного судейства."""
     comp = Competition.query.get_or_404(comp_id)
     official_logs = get_official_logs(comp.id)
     submitted = {log.callsign.strip().upper() for log in official_logs if log.callsign}
-    official_log_ids = {log.id for log in official_logs}
-
-    if not official_log_ids:
-        return render_template('admin_missing.html', comp=comp, missing=[])
-
-    rows = QSO.query.filter(
-        QSO.competition_id == comp.id,
-        QSO.log_id.in_(official_log_ids),
-    ).all()
 
     mentions = defaultdict(set)
-    for q in rows:
-        call = (q.corr_call or '').strip().upper()
-        if not call or call in submitted:
+    for log in official_logs:
+        if not log.file_path or not os.path.exists(log.file_path):
             continue
-        mentions[call].add(q.log_id)
+        try:
+            parsed_qsos = parse_cabrillo_file(log.file_path, log.callsign)
+        except Exception:
+            current_app.logger.exception(f"Не удалось разобрать отчет {log.file_path}")
+            continue
+        for q in parsed_qsos:
+            call = (q.get('corr_call') or '').strip().upper()
+            if not call or call in submitted:
+                continue
+            mentions[call].add(log.id)
 
     missing = sorted(((call, len(log_ids)) for call, log_ids in mentions.items()),
                      key=lambda x: (-x[1], x[0]))

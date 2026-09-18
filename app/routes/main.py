@@ -1,6 +1,6 @@
 from flask import Blueprint, render_template
 from app.models import Competition, ReceivedLog
-from app.utils import get_official_logs
+from app.utils import get_official_logs, get_categories_list
 from app.auth import permission_required
 
 main_bp = Blueprint('main', __name__)
@@ -12,13 +12,14 @@ def show_results(comp_id):
     # Только официальные (последние) отчеты — дубли не попадают в протокол
     logs = get_official_logs(comp_id)
 
-    # 1. Группировка отчетов текущего соревнования по категориям
+    # 1. Группировка отчетов по категориям в порядке конструктора соревнований
     grouped_results = {}
+    for cat in get_categories_list(comp.categories):
+        grouped_results[cat] = []
+
     for log in logs:
-        cat = log.category if log.category else "Без категории"
-        if cat not in grouped_results:
-            grouped_results[cat] = []
-        grouped_results[cat].append(log)
+        cat = log.category if log.category in grouped_results else (log.category or 'Без категории')
+        grouped_results.setdefault(cat, []).append(log)
         
     # 2. Безопасная сортировка участников по очкам и подтвержденным QSO
     for cat in grouped_results:

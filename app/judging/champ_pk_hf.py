@@ -64,6 +64,16 @@ def _norm(val):
     return str(int(s)) if s.isdigit() else s
 
 
+def _is_mirror(q, cand):
+    """
+    True, если связь cand в отчете корреспондента зеркальна нашей связи q:
+    переданные нами RST+номер совпадают с принятыми корреспондентом и наоборот.
+    """
+    sent_ok = (_norm(q.rst_sent) == _norm(cand.rst_rcvd)) and (_norm(q.nr_sent) == _norm(cand.nr_rcvd))
+    rcvd_ok = (_norm(q.rst_rcvd) == _norm(cand.rst_sent)) and (_norm(q.nr_rcvd) == _norm(cand.nr_sent))
+    return sent_ok and rcvd_ok
+
+
 def run_judging_primorye(comp_id):
     comp = Competition.query.get(comp_id)
     if not comp:
@@ -174,14 +184,25 @@ def run_judging_primorye(comp_id):
         ).order_by(QSO.qso_datetime).all()
 
         exact = None
+        exact_time_diff = None
+        exact_matches = False
         partner_wrong_call = None
         for cand in partner_qsos:
             if cand.corr_call == q.my_call:
-                exact = cand
-                break
-            sent_ok = (_norm(q.rst_sent) == _norm(cand.rst_rcvd)) and (_norm(q.nr_sent) == _norm(cand.nr_rcvd))
-            rcvd_ok = (_norm(q.rst_rcvd) == _norm(cand.rst_sent)) and (_norm(q.nr_rcvd) == _norm(cand.nr_sent))
-            if sent_ok and rcvd_ok:
+                # Среди всех QSO корреспондента с нашим позывным в окне времени
+                # выбираем настоящее зеркало: ближайшее по времени, и предпочтительно
+                # с полностью совпадающими RST+номером (повторные связи в разных
+                # турах не должны «перехватывать» друг друга).
+                diff = abs((cand.qso_datetime - q.qso_datetime).total_seconds())
+                matches = _is_mirror(q, cand)
+                if (exact is None
+                        or (matches and not exact_matches)
+                        or (matches == exact_matches and diff < exact_time_diff)):
+                    exact = cand
+                    exact_time_diff = diff
+                    exact_matches = matches
+                continue
+            if _is_mirror(q, cand) and partner_wrong_call is None:
                 partner_wrong_call = cand
 
         if exact is None:
@@ -207,14 +228,15 @@ def run_judging_primorye(comp_id):
                 QSO.qso_datetime <= q.qso_datetime + time_delta
             ).all()
             real_cand = None
+            real_cand_diff = None
             for cand in real_qsos:
                 if cand.my_call == q.corr_call:
                     continue
-                sent_ok = (_norm(q.rst_sent) == _norm(cand.rst_rcvd)) and (_norm(q.nr_sent) == _norm(cand.nr_rcvd))
-                rcvd_ok = (_norm(q.rst_rcvd) == _norm(cand.rst_sent)) and (_norm(q.nr_rcvd) == _norm(cand.nr_sent))
-                if sent_ok and rcvd_ok:
-                    real_cand = cand
-                    break
+                if _is_mirror(q, cand):
+                    diff = abs((cand.qso_datetime - q.qso_datetime).total_seconds())
+                    if real_cand is None or diff < real_cand_diff:
+                        real_cand = cand
+                        real_cand_diff = diff
             if real_cand is not None:
                 q.is_valid = False
                 q.error_reason = (
