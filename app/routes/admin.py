@@ -54,7 +54,7 @@ def get_available_plugins():
     return plugins
 
 
-def _validate_plugin(script_name, fallback_seed='primorye_hf'):
+def _validate_plugin(script_name, fallback_seed='champ_pk_hf'):
     """Белый список плагинов судейства (F3): допускается только имя файла,
     реально существующего в app/judging/. При недопустимом имени выбирается
     реально доступный плагин (сначала похожий на script/fallback_seed)."""
@@ -67,7 +67,7 @@ def _validate_plugin(script_name, fallback_seed='primorye_hf'):
     )
     if fallback_seed in allowed:
         return fallback_seed
-    for preferred in ('judging',):
+    for preferred in ('champ_pk_hf',):
         if preferred in allowed:
             return preferred
     # На случай если прежнего «дефолтного» плагина (primorye_hf) больше нет —
@@ -289,7 +289,7 @@ def add_competition():
             end_time=datetime.strptime(request.form.get('end_time'), '%Y-%m-%dT%H:%M'),
             deadline_time=datetime.strptime(request.form.get('deadline_time'), '%Y-%m-%dT%H:%M'),
             time_delta_allowed=request.form.get('time_delta', type=int, default=3),
-            scoring_script_filename=_validate_plugin(request.form.get('scoring_script_filename', 'primorye_hf')),
+            scoring_script_filename=_validate_plugin(request.form.get('scoring_script_filename', 'champ_pk_hf')),
             categories=json.dumps(data['categories'], ensure_ascii=False),
             tours=json.dumps(data['tours'], ensure_ascii=False)
         )
@@ -314,7 +314,7 @@ def edit_competition(comp_id):
         comp.end_time = datetime.strptime(request.form.get('end_time'), '%Y-%m-%dT%H:%M')
         comp.deadline_time = datetime.strptime(request.form.get('deadline_time'), '%Y-%m-%dT%H:%M')
         comp.time_delta_allowed = request.form.get('time_delta', type=int, default=3)
-        comp.scoring_script_filename = _validate_plugin(request.form.get('scoring_script_filename', 'primorye_hf'))
+        comp.scoring_script_filename = _validate_plugin(request.form.get('scoring_script_filename', 'champ_pk_hf'))
         
         comp.categories = json.dumps(data['categories'], ensure_ascii=False)
         comp.tours = json.dumps(data['tours'], ensure_ascii=False)

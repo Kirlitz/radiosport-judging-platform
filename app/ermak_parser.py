@@ -159,7 +159,19 @@ def parse_ermak(file_content, comp_start=None, comp_end=None, plugin_title=None)
 
             if raw_key:
                 key = normalize_header_key(raw_key)
-                headers[key] = val
+                if key == 'ADDRESS':
+                    # В формате Ermak может быть до трех полей ADDRESS очереди:
+                    # каждая следующая строка дополняет предыдущую (индекс, регион/город, улица и т.д.).
+                    # Объединяем их в одно значение через запятую.
+                    new_val = val.strip(' ,')
+                    prev = headers.get('ADDRESS')
+                    if new_val:
+                        if prev:
+                            headers['ADDRESS'] = f"{prev.rstrip(' ,')}, {new_val}"
+                        else:
+                            headers['ADDRESS'] = new_val
+                else:
+                    headers[key] = val
 
                 if key in ['OPERATORS', 'OPERATOR'] and val:
                     # В формате Ermak несколько операторов разделяются точкой с запятой.

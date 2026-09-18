@@ -81,7 +81,7 @@ class Competition(db.Model):
     tours = db.Column(db.Text, default='[]')
     bands = db.Column(db.Text, default='[]')
     modes = db.Column(db.Text, default='[]')
-    scoring_script_filename = db.Column(db.String(100), default='primorye_hf')
+    scoring_script_filename = db.Column(db.String(100), default='champ_pk_hf')
     is_judged = db.Column(db.Boolean, default=False)
     categories = db.Column(db.Text, nullable=False, default='[]')
 
