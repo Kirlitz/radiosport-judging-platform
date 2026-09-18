@@ -1,6 +1,6 @@
 import re
-from datetime import datetime
 
+from app.qso_parser import parse_qso_line
 from app.utils import normalize_mode
 
 def freq_to_band(freq_str):
@@ -80,53 +80,32 @@ def parse_cabrillo_header(file_path):
                 
     return header
 
-def parse_cabrillo_file(file_path, my_callsign):
+def parse_cabrillo_file(file_path, my_callsign, exchange_spec=None):
     qsos = []
     lines = read_file_with_fallback(file_path)
+    my_callsign = (my_callsign or '').strip().upper()
 
     for line in lines:
         clean_line = line.strip()
-        # ИСПРАВЛЕНО: убрана жесткая привязка к началу строки, теперь re.match игнорирует пробелы перед QSO:
         if not clean_line.upper().startswith('QSO:'):
             continue
-            
-        parts = clean_line.split()
-        if len(parts) < 10:  # Минимальное количество полей в Cabrillo/Ермак
+
+        tokens = clean_line.split()
+        parsed = parse_qso_line(tokens, exchange_spec=exchange_spec)
+        if parsed is None:
             continue
-        
-        freq, mode = parts[1], normalize_mode(parts[2])
-        date_str, time_str = parts[3], parts[4]
-        
-        try:
-            if len(time_str) == 4:
-                dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H%M")
-            else:
-                dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
-        except:
-            continue
-            
-        # ИСПРАВЛЕНО: Извлекаем данные с конца строки, так как в середине может быть 
-        # или не быть локатора (63LE / 53wc), что смещает индексы с начала строки.
-        # Структура конца строки Ермака ВСЕГДА: ... [ПОЗЫВНОЙ_КОРР] [RST_ПРИНЯТ] [НОМЕР_ПРИНЯТ]
-        nr_rcvd = parts[-1]
-        rst_rcvd = parts[-2]
-        corr_call = parts[-3].upper().strip()
-        
-        # Номера переданные (находятся перед позывным корреспондента)
-        # Ищем позицию корреспондента и берем элементы перед ней
-        corr_idx = parts.index(parts[-3])
-        nr_sent = parts[corr_idx - 1]
-        rst_sent = parts[corr_idx - 2]
-            
+
         qsos.append({
-            'my_call': my_callsign.upper().strip(),
-            'band': freq_to_band(freq),
-            'mode': mode,
-            'qso_datetime': dt,
-            'rst_sent': rst_sent,
-            'nr_sent': nr_sent,
-            'corr_call': corr_call,
-            'rst_rcvd': rst_rcvd,
-            'nr_rcvd': nr_rcvd
+            'my_call': parsed['my_call'] or my_callsign,
+            'band': freq_to_band(parsed['freq']),
+            'mode': normalize_mode(parsed['mode_raw']),
+            'qso_datetime': parsed['dt'],
+            'rst_sent': parsed['rst_s'],
+            'nr_sent': parsed['exch_s'],
+            'corr_call': parsed['his_call'],
+            'rst_rcvd': parsed['rst_r'],
+            'nr_rcvd': parsed['exch_r'],
+            'format_errors': parsed['format_errors'],
+            'has_critical_format': parsed['has_critical_format'],
         })
     return qsos

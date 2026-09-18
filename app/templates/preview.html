@@ -18,6 +18,11 @@
         .grid-4 { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 10px; }
         .status-ok { color: #28a745; font-weight: bold; }
         .status-err { color: #dc3545; font-weight: bold; background-color: #f8d7da; }
+        .row-bad { background-color: #f8d7da; }
+        .row-warn { background-color: #fff3cd; }
+        .badge-ok { display:inline-block; padding:1px 5px; border-radius:3px; background:#d4edda; color:#155724; font-size:12px; }
+        .badge-warn { display:inline-block; padding:1px 5px; border-radius:3px; background:#fff3cd; color:#856404; font-size:12px; cursor:help; }
+        .badge-bad { display:inline-block; padding:1px 5px; border-radius:3px; background:#dc3546; color:#fff; font-size:12px; cursor:help; }
     </style>
 </head>
 <body>
@@ -30,6 +35,17 @@
         <div class="warning-box" style="border-left: 5px solid #ffc107;">
             <h3>⚠️ Опоздание с подачей отчета</h3>
             <p>{{ status_msg }}</p>
+        </div>
+    {% endif %}
+
+    <!-- P-01: нарушение формата QSO (например, отсутствует RST) — прием как Checklog -->
+    {% if status_code == 'FORMAT_INVALID' %}
+        <div class="warning-box" style="border-left: 5px solid #dc3545; background: #f8d7da; border-color: #f5c6cb; color: #721c24;">
+            <h3>⚠️ Найдены связи с нарушением формата</h3>
+            <p>{{ status_msg }}</p>
+            <p>Связи с поврежденным обменом подсвечены <span style="background:#f8d7da;">красным</span>,
+               предупреждения (незначительные отклонения) — <span style="background:#fff3cd;">желтым</span>.
+               В зачетную группу такой отчет засчитан быть не может и будет принят только как Checklog.</p>
         </div>
     {% endif %}
 
@@ -61,8 +77,8 @@
         <!-- Выбор зачетной группы -->
         <div class="info-card" style="border-left: 5px solid #007bff;">
             <h3>Заявленная зачетная группа</h3>
-            {% if status_code == 'CHECKLOG_ONLY' %}
-                <p><strong>Зачетная группа:</strong> Checklog (Установлена автоматически из-за опоздания)</p>
+            {% if forced_checklog %}
+                <p><strong>Зачетная группа:</strong> Checklog (установлена автоматически)</p>
                 <input type="hidden" name="claimed_category" value="CHECKLOG">
             {% else %}
                 <label><strong>Укажите вид программы (зачетную группу):</strong></label>
@@ -177,7 +193,7 @@
                     </div>
                 </div>
 
-                {% for i in range(2, 4) %}
+                {% for i in range(2, 5) %}
                     {% set op = operators[i-1] if operators|length >= i else None %}
                     <div class="op-box">
                         <strong>Оператор {{ i }}</strong>
@@ -228,12 +244,13 @@
                         <th>Передано</th>
                         <th>Корреспондент</th>
                         <th>Принято</th>
+                        <th>Формат</th>
                         <th style="width: 220px;">Предварительный статус / Очки</th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for qso in qsos %}
-                    <tr>
+                    <tr class="{% if qso.has_critical_format %}row-bad{% elif qso.format_errors %}row-warn{% endif %}">
                         <td style="text-align: center;">{{ loop.index }}</td>
                         <td style="text-align: center;">{{ qso.date }}</td>
                         <td style="text-align: center;">{{ qso.time }}</td>
@@ -243,6 +260,15 @@
                         <td style="text-align: center;">{{ qso.my_rst }} {{ qso.my_exch }}</td>
                         <td style="text-align: center;"><strong>{{ qso.his_call }}</strong></td>
                         <td style="text-align: center;">{{ qso.his_rst }} {{ qso.his_exch }}</td>
+                        <td style="text-align: center;">
+                            {%- if qso.format_errors -%}
+                                {%- for err in qso.format_errors -%}
+                                    <span class="{% if err.critical %}badge-bad{% else %}badge-warn{% endif %}" title="{{ err.text }}">{{ err.label }}</span>{{ ' ' if not loop.last }}
+                                {%- endfor -%}
+                            {%- else -%}
+                                <span class="badge-ok">OK</span>
+                            {%- endif -%}
+                        </td>
                         <td class="{% if qso.status_info.is_error %}status-err{% else %}status-ok{% endif %}">
                             {{ qso.status_info.text }}
                         </td>

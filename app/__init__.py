@@ -127,6 +127,7 @@ def create_app(config_class=Config):
     with app.app_context():
         db.create_all()
         _ensure_session_token_column(app)
+        _ensure_competition_columns(app)
         seed_users_db(app)
 
     return app
@@ -150,6 +151,26 @@ def _ensure_session_token_column(app):
                 conn.execute(text('ALTER TABLE "user" ADD COLUMN session_token_hash VARCHAR(64)'))
     except Exception:
         app.logger.exception("Не удалось выполнить миграцию session_token_hash")
+
+
+def _ensure_competition_columns(app):
+    """Одноразовая миграция: добавляет колонки timezone, judging_status,
+    judging_message в таблицу competition (V-10, V-08). Идемпотентна."""
+    from sqlalchemy import inspect, text
+    try:
+        inspector = inspect(db.engine)
+        if 'competition' not in inspector.get_table_names():
+            return
+        columns = {c['name'] for c in inspector.get_columns('competition')}
+        with db.engine.begin() as conn:
+            if 'timezone' not in columns:
+                conn.execute(text("ALTER TABLE competition ADD COLUMN timezone VARCHAR(64) DEFAULT 'UTC'"))
+            if 'judging_status' not in columns:
+                conn.execute(text("ALTER TABLE competition ADD COLUMN judging_status VARCHAR(16) DEFAULT 'none'"))
+            if 'judging_message' not in columns:
+                conn.execute(text("ALTER TABLE competition ADD COLUMN judging_message VARCHAR(500) DEFAULT ''"))
+    except Exception:
+        app.logger.exception("Не удалось выполнить миграцию competition-колонок")
 
 
 def seed_users_db(app):

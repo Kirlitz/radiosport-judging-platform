@@ -2,13 +2,14 @@ import re
 import os
 import json
 import secrets
-import importlib
-from datetime import datetime, timedelta
+from datetime import timedelta
 from flask import Blueprint, request, render_template, current_app
 from werkzeug.utils import secure_filename
 from app import limiter # Импортируем лимитер
 from app.models import db, Competition, ReceivedLog, Operator, PendingUpload
 from app.ermak_parser import parse_ermak, update_cabrillo_header
+from app.plugins import get_plugin_title, get_plugin_exchange_spec
+from app.timeutils import utcnow
 from app.utils import get_categories_list
 
 user_bp = Blueprint('user', __name__)
@@ -26,18 +27,6 @@ PREVIEW_MAX_QSO = 1000
 # Проверка формата e-mail (строгая): имя@домен.зона
 EMAIL_RE = re.compile(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
 
-def get_plugin_title(comp):
-    """Возвращает PLUGIN_TITLE выбранного для соревнования плагина (или пустую строку)."""
-    script = (comp.scoring_script_filename or '').strip()
-    if not script:
-        return ''
-    try:
-        module = importlib.import_module(f'app.judging.{script}')
-        return getattr(module, 'PLUGIN_TITLE', '')
-    except Exception as e:
-        current_app.logger.error(f"Не удалось загрузить плагин {script}: {e}")
-        return ''
-
 def sanitize_text(text, max_length=100):
     """
     Очищает строку от потенциально опасных символов, используемых в XSS, SSTI и RCE.
@@ -53,12 +42,16 @@ def sanitize_text(text, max_length=100):
 @limiter.limit("120 per minute")
 def index():
     competitions = Competition.query.all()
-    logs_by_comp = {}
-    for comp in competitions:
-        logs = ReceivedLog.query.filter_by(competition_id=comp.id).all()
-        if logs:
-            logs_by_comp[comp.name] = list(dict.fromkeys(log.callsign for log in logs))
-            
+    comp_ids = {c.id for c in competitions}
+    buckets = {}
+    for lg in ReceivedLog.query.all():
+        if lg.competition_id not in comp_ids:
+            continue
+        bucket = buckets.setdefault(lg.competition_id, [])
+        call = (lg.callsign or '').strip().upper()
+        if call and call not in bucket:
+            bucket.append(call)
+    logs_by_comp = {c.name: buckets[c.id] for c in competitions if c.id in buckets}
     return render_template('index.html', competitions=competitions, logs_by_comp=logs_by_comp)
 
 @user_bp.route('/upload', methods=['POST'])
@@ -74,17 +67,24 @@ def upload_log():
         
     content = file.read()
     plugin_title = get_plugin_title(comp)
+    exchange_spec = get_plugin_exchange_spec(comp)
     headers, qsos, missing_headers, raw_text, operators = parse_ermak(
-        content, comp.start_time, comp.end_time, plugin_title
+        content, comp.start_time, comp.end_time, plugin_title, exchange_spec=exchange_spec
     )
     
-    now = datetime.now()
+    now = utcnow()
     status_code = 'OK'
     status_msg = ''
     
     if now > comp.deadline_time:
         status_code = 'CHECKLOG_ONLY'
         status_msg = 'Отчет загружен после окончания срока приема. Он будет принят только для контроля (Checklog).'
+    elif any(q.get('has_critical_format') for q in qsos):
+        # P-01: критическое нарушение формата QSO (например, отсутствует RST) —
+        # отчет допустим только в зачетную группу Checklog.
+        status_code = 'FORMAT_INVALID'
+        status_msg = ('В отчете обнаружены связи с нарушением формата (отсутствует RST или повреждены '
+                      'поля обмена). Такой отчет может быть принят только для контроля (Checklog).')
 
     # Парсим список категорий
     categories_list = get_categories_list(comp.categories)
@@ -109,7 +109,7 @@ def upload_log():
 
     # Подчистка истекших сессий (раз в новую загрузку, дёшево для SQLite)
     PendingUpload.query.filter(
-        PendingUpload.created_at < datetime.now() - timedelta(hours=2)
+        PendingUpload.created_at < utcnow() - timedelta(hours=2)
     ).delete(synchronize_session=False)
 
     db.session.commit()
@@ -121,6 +121,7 @@ def upload_log():
                            contest_plugin_title=plugin_title,
                            status_code=status_code,
                            status_msg=status_msg,
+                           forced_checklog=status_code != 'OK',
                            upload_token=token,
                            missing_headers=missing_headers,
                            categories=categories,
@@ -143,7 +144,7 @@ def confirm_upload():
     pending = PendingUpload.query.filter_by(token=upload_token).first()
     if pending is None or pending.used or pending.competition_id != comp.id:
         return "Ошибка: Сессия загрузки не найдена или уже использована. Загрузите файл отчета заново.", 400
-    if datetime.now() - pending.created_at > PENDING_TTL:
+    if utcnow() - pending.created_at > PENDING_TTL:
         return "Ошибка: Сессия загрузки истекла. Загрузите файл отчета заново.", 400
 
     raw_text = pending.raw_text
@@ -152,8 +153,14 @@ def confirm_upload():
     except (json.JSONDecodeError, TypeError):
         headers = {}
 
-    # Перепарсиваем отчет: проверяем согласованность позывного и считаем QSO
-    _, qsos, _, _, _ = parse_ermak(raw_text, comp.start_time, comp.end_time)
+    # Перепарсиваем отчет: проверяем согласованность позывного и считаем QSO.
+    # Форматные (критические) нарушения перепроверяются по серверной копии —
+    # пользователь не может обойти CHECKLOG-гейт, отправив форму вручную.
+    exchange_spec = get_plugin_exchange_spec(comp)
+    _, qsos, _, _, _ = parse_ermak(
+        raw_text, comp.start_time, comp.end_time, exchange_spec=exchange_spec
+    )
+    critical_format = any(q.get('has_critical_format') for q in qsos)
 
     # Собираем всех операторов из формы (участник дополняет данные о своей станции)
     operators = []
@@ -233,9 +240,9 @@ def confirm_upload():
         return "Ошибка: В отчете найдены связи, записанные на другой позывной", 400
 
     # Категория проверяется строго по списку соревнования.
-    # После дедлайна зачетная группа вынужденно CHECKLOG.
-    now = datetime.now()
-    if now > comp.deadline_time:
+    # После дедлайна или при нарушении формата QSO (P-01) — только CHECKLOG.
+    now = utcnow()
+    if now > comp.deadline_time or critical_format:
         claimed_category = 'CHECKLOG'
     else:
         claimed_category = sanitize_text(request.form.get('claimed_category', ''), CATEGORY_MAX_LENGTH)
@@ -269,11 +276,6 @@ def confirm_upload():
 
     # 1. Новая запись для КАЖДОЙ подачи: старые отчеты не затираются,
     #    а сохраняются. Лишние (дубли, чужие) администратор удаляет в админке.
-    # Считаем ранее принятые отчеты этого позывного — для нумерации файлов.
-    previous_count = ReceivedLog.query.filter_by(
-        competition_id=comp.id, callsign=callsign
-    ).count()
-
     new_log = ReceivedLog(
         competition_id=comp.id,
         callsign=callsign,
@@ -290,13 +292,15 @@ def confirm_upload():
     db.session.add(new_log)
     db.session.flush()
 
-    # 2. Имя файла: первый отчет — <позывной>.cbr;
-    #    повторные подачи того же позывного — <позывной>_<N>.cbr,
-    #    где N — порядковый номер подачи.
-    if previous_count == 0:
-        file_name = f"{safe_callsign}.cbr"
+    # 2. Имя файла: первый отчет — <позывной>.cbr; повторные подачи того же
+    #    позывного — <позывной>_ггггммддччммсс.cbr. Метка времени (P-03)
+    #    исключает затирание предыдущей подачи при коллизии нумерации.
+    upload_stamp = utcnow().strftime('%Y%m%d%H%M%S')
+    first_candidate = os.path.join(dir_path, f"{safe_callsign}.cbr")
+    if os.path.exists(first_candidate):
+        file_name = f"{safe_callsign}_{upload_stamp}.cbr"
     else:
-        file_name = f"{safe_callsign}_{previous_count + 1}.cbr"
+        file_name = f"{safe_callsign}.cbr"
     file_path = os.path.join(dir_path, file_name)
 
     # 3. Записываем исходный текст
@@ -320,7 +324,7 @@ def confirm_upload():
     pending.used = True
     PendingUpload.query.filter(
         (PendingUpload.used.is_(True)) &
-        (PendingUpload.created_at < datetime.now() - timedelta(hours=1))
+        (PendingUpload.created_at < utcnow() - timedelta(hours=1))
     ).delete(synchronize_session=False)
 
     db.session.commit()

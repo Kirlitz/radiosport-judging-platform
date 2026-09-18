@@ -1,4 +1,6 @@
 import json
+from collections import defaultdict
+
 from app.models import ReceivedLog, QSO
 
 # Алиасы видов модуляции: разные программы (Ермак, логгеры Cabrillo) могут
@@ -128,3 +130,28 @@ def get_official_logs(comp_id):
             seen.add(key)
             official.append(log)
     return official
+
+
+def get_grouped_results(comp):
+    """Группирует официальные отчеты соревнования по категориям в порядке
+    конструктора. Учитываются только последние (официальные) отчеты — дубли
+    не попадают в протокол. Сортировка внутри группы: по подтвержденным очкам,
+    подтвержденным и заявленным связям (по убыванию)."""
+    grouped = defaultdict(list)
+    for cat in get_categories_list(comp.categories):
+        grouped[cat] = []
+
+    for log in get_official_logs(comp.id):
+        cat = log.category if log.category in grouped else (log.category or 'Без категории')
+        grouped[cat].append(log)
+
+    for cat in grouped:
+        grouped[cat].sort(
+            key=lambda x: (
+                x.score if x.score is not None else 0,
+                x.confirmed_qsos if x.confirmed_qsos is not None else 0,
+                x.claimed_qsos if x.claimed_qsos is not None else 0,
+            ),
+            reverse=True,
+        )
+    return dict(grouped)

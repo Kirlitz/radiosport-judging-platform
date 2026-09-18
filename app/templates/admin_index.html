@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <title>Панель администратора</title>
+    {% if judging_running %}<meta http-equiv="refresh" content="15">{% endif %}
     <style>
         body { font-family: Arial, sans-serif; max-width: 1200px; margin: 20px auto; padding: 0 15px; color: #333; }
         .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #dee2e6; padding-bottom: 15px; margin-bottom: 20px; }
@@ -36,6 +37,9 @@
         .status-badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; display: inline-block; }
         .badge-success { background: #d4edda; color: #155724; }
         .badge-secondary { background: #e2e3e5; color: #383d41; }
+        .badge-running { background: #fcf8e3; color: #8a6d3b; border: 1px solid #faebcc; }
+        .badge-running::after { content: ""; display:inline-block; width:8px; height:8px; margin-left:6px; border-radius:50%; background:#f0ad4e; animation: blink 1s infinite; vertical-align: baseline; }
+        @keyframes blink { 0%,100% { opacity:1; } 50% { opacity:0.2; } }
         
         .actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
     </style>
@@ -92,10 +96,15 @@
                 <td>{{ comp.start_time.strftime('%d.%m.%Y %H:%M') }}</td>
                 <td>{{ comp.end_time.strftime('%d.%m.%Y %H:%M') }}</td>
                 <td>
-                    {% if comp.is_judged %}
+                    {% if comp.judging_status == 'running' %}
+                        <span class="status-badge badge-running">Судейство выполняется…</span>
+                    {% elif comp.is_judged or comp.judging_status == 'done' %}
                         <span class="status-badge badge-success">Просужено</span>
                     {% else %}
                         <span class="status-badge badge-secondary">Ожидает</span>
+                    {% endif %}
+                    {% if comp.judging_message %}
+                        <div style="font-size:11px; color:#6c757d; margin-top:3px;">{{ comp.judging_message }}</div>
                     {% endif %}
                 </td>
                 <td>

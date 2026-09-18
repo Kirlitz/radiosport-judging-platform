@@ -1,4 +1,3 @@
-from datetime import datetime
 from flask_sqlalchemy import SQLAlchemy
 
 db = SQLAlchemy()
@@ -85,6 +84,14 @@ class Competition(db.Model):
     is_judged = db.Column(db.Boolean, default=False)
     categories = db.Column(db.Text, nullable=False, default='[]')
 
+    # Тайм-зона, в которой администратор вводит время в конструкторе (V-10).
+    # Сами даты start/end/deadline всегда хранятся и сравниваются в UTC.
+    timezone = db.Column(db.String(64), default='UTC')
+
+    # Статус фонового судейства (V-08): none | running | done | error.
+    judging_status = db.Column(db.String(16), default='none')
+    judging_message = db.Column(db.String(500), default='')
+
 class ReceivedLog(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     # ИЗМЕНЕНО: Добавлен index=True для ускорения загрузки главной страницы
@@ -129,7 +136,7 @@ class PendingUpload(db.Model):
     competition_id = db.Column(db.Integer, db.ForeignKey('competition.id'), nullable=False, index=True)
     raw_text = db.Column(db.Text, nullable=False)
     headers = db.Column(db.Text, default='{}')
-    created_at = db.Column(db.DateTime, default=datetime.now, nullable=False)
+    created_at = db.Column(db.DateTime, default=db.func.now(), nullable=False)
     used = db.Column(db.Boolean, default=False, nullable=False)
 
 # НОВАЯ ТАБЛИЦА: Операторы

@@ -67,10 +67,30 @@
                    </select>
                 </div>
                 <div class="grid-dates">
-                    <div><label>Начало:</label><input type="datetime-local" id="comp_start" name="start_time" value="{{ comp.start_time.strftime('%Y-%m-%dT%H:%M') if comp and comp.start_time else '' }}" required></div>
-                    <div><label>Окончание:</label><input type="datetime-local" id="comp_end" name="end_time" value="{{ comp.end_time.strftime('%Y-%m-%dT%H:%M') if comp and comp.end_time else '' }}" required></div>
-                    <div><label>Дедлайн отчетов:</label><input type="datetime-local" name="deadline_time" value="{{ comp.deadline_time.strftime('%Y-%m-%dT%H:%M') if comp and comp.deadline_time else '' }}" required></div>
+                    <div><label>Начало:</label><input type="datetime-local" id="comp_start" name="start_time" value="{{ start_display or (comp.start_time.strftime('%Y-%m-%dT%H:%M') if comp and comp.start_time else '') }}" required></div>
+                    <div><label>Окончание:</label><input type="datetime-local" id="comp_end" name="end_time" value="{{ end_display or (comp.end_time.strftime('%Y-%m-%dT%H:%M') if comp and comp.end_time else '') }}" required></div>
+                    <div><label>Дедлайн отчетов:</label><input type="datetime-local" name="deadline_time" value="{{ deadline_display or (comp.deadline_time.strftime('%Y-%m-%dT%H:%M') if comp and comp.deadline_time else '') }}" required></div>
                     <div><label>Погрешность (мин):</label><input type="number" name="time_delta" value="{{ comp.time_delta_allowed if comp else 3 }}" required></div>
+                </div>
+                <div class="form-group">
+                    <label>Временная зона соревнования:</label>
+                    <div style="display:flex; gap:20px; flex-wrap:wrap; align-items:center;">
+                        <label style="font-weight:normal; display:flex; align-items:center; gap:4px;">
+                            <input type="radio" name="time_mode" value="UTC" {% if comp_timezone == 'UTC' %}checked{% endif %} onchange="toggleTz()"> Всемирное время (UTC)
+                        </label>
+                        <label style="font-weight:normal; display:flex; align-items:center; gap:4px;">
+                            <input type="radio" name="time_mode" value="ZONE" {% if comp_timezone != 'UTC' %}checked{% endif %} onchange="toggleTz()"> Местное время
+                        </label>
+                        <select name="comp_timezone" id="comp_timezone_select">
+                            {% for tz_id, tz_label in timezone_list %}
+                                <option value="{{ tz_id }}" {% if comp_timezone == tz_id %}selected{% endif %}>{{ tz_label }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <p style="font-size:12px; color:#6c757d; margin-top:4px;">
+                        Время начала/окончания, дедлайн и сеансы вводятся в выбранной зоне,
+                        в базе хранятся в UTC, участникам показываются их местные значения.
+                    </p>
                 </div>
             </div>
 
@@ -235,6 +255,16 @@
             container.appendChild(row);
         }
 
+        function toggleTz() {
+            const mode = document.querySelector('input[name="time_mode"]:checked');
+            const select = document.getElementById("comp_timezone_select");
+            if (mode && mode.value === 'UTC') {
+                select.disabled = true;
+            } else {
+                select.disabled = false;
+            }
+        }
+
         window.addEventListener("DOMContentLoaded", () => {
             const safeParse = (id) => { try { return JSON.parse(document.getElementById(id).textContent || "[]"); } catch { return []; } };
             
@@ -246,6 +276,8 @@
             const tours = safeParse("data-tours");
             if (tours.length > 0) tours.forEach(t => addTourRow(t.start, t.end, t.divide_by, t.divide_value));
             else addTourRow(); 
+
+            toggleTz(); 
 
             document.querySelector("form").addEventListener("submit", function(e) {
                 const inputs = document.querySelectorAll('input[name="categories[]"]');

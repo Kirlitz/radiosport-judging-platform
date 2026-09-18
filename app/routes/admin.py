@@ -3,18 +3,20 @@ import os
 import io
 import re
 import zipfile
-import importlib
 import shutil
-from datetime import datetime
 from collections import defaultdict
+from datetime import datetime
 from flask import Blueprint, render_template, request, redirect, url_for, session, flash, current_app, send_file, abort
 from app.models import db, User, Permission, UserPermission, Competition, ReceivedLog, QSO, Operator
 from app.cabrillo import parse_cabrillo_file
 from app.auth import permission_required, get_current_user, generate_session_token, hash_session_token
 from app import limiter, _client_ip
+from app.plugins import get_available_plugins
+from app.judge import start_judging
+from app.timeutils import utcnow, parse_local_dt_input, dt_for_edit_form, utc_to_zone_str
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
-from app.utils import get_official_logs, get_categories_list, parse_categories, category_rules_map, out_of_category_reason
+from app.utils import get_official_logs, get_grouped_results, get_categories_list, parse_categories, category_rules_map, out_of_category_reason
 import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill
 
@@ -23,6 +25,26 @@ admin_bp = Blueprint('admin', __name__, url_prefix='/admin')
 # Логин: 3-50 символов, латинские буквы, цифры, "._-"
 USERNAME_RE = re.compile(r'^[A-Za-z0-9_.-]{3,50}$')
 
+# Допустимая длина названия зачетной группы (совпадает с admin_edit.html)
+CATEGORY_MAX_LENGTH = 110
+
+# Доступные тайм-зоны для конструктора соревнований (V-10)
+TIMEZONE_LIST = [
+    ('UTC', 'UTC (всемирное время)'),
+    ('Europe/Kaliningrad', 'Калининград (UTC+2)'),
+    ('Europe/Moscow', 'Москва (UTC+3)'),
+    ('Europe/Samara', 'Самара (UTC+4)'),
+    ('Asia/Yekaterinburg', 'Екатеринбург (UTC+5)'),
+    ('Asia/Omsk', 'Омск (UTC+6)'),
+    ('Asia/Novosibirsk', 'Новосибирск (UTC+7)'),
+    ('Asia/Krasnoyarsk', 'Красноярск (UTC+7)'),
+    ('Asia/Irkutsk', 'Иркутск (UTC+8)'),
+    ('Asia/Yakutsk', 'Якутск (UTC+9)'),
+    ('Asia/Vladivostok', 'Владивосток (UTC+10)'),
+    ('Asia/Magadan', 'Магадан (UTC+11)'),
+    ('Asia/Kamchatka', 'Камчатка (UTC+12)'),
+]
+
 # Учетные записи, которые нельзя удалить или лишить полных прав —
 # "запасной" доступ к панели при любых манипуляциях с правами.
 PROTECTED_USERNAMES = {'admin'}
@@ -30,29 +52,6 @@ PROTECTED_USERNAMES = {'admin'}
 # Заглушка для выравнивания времени ответа при несуществующем логине
 # (защита от определения существования аккаунта по задержке).
 _DUMMY_HASH = generate_password_hash('invalid-password-placeholder-for-timing')
-
-def get_available_plugins():
-    """Сканирует директорию app/judging и возвращает список доступных плагинов."""
-    judging_dir = os.path.join(current_app.root_path, 'judging')
-    plugins = []
-    
-    if os.path.exists(judging_dir):
-        for filename in os.listdir(judging_dir):
-            if filename.endswith('.py') and not filename.startswith('__'):
-                module_name = filename[:-3]
-                title = module_name
-                try:
-                    mod = importlib.import_module(f'app.judging.{module_name}')
-                    if hasattr(mod, 'PLUGIN_TITLE'):
-                        title = mod.PLUGIN_TITLE
-                except Exception as e:
-                    current_app.logger.error(f"Ошибка загрузки плагина {module_name}: {e}")
-                    
-                plugins.append({
-                    'id': module_name,
-                    'title': title
-                })
-    return plugins
 
 
 def _validate_plugin(script_name, fallback_seed='champ_pk_hf'):
@@ -71,8 +70,6 @@ def _validate_plugin(script_name, fallback_seed='champ_pk_hf'):
     for preferred in ('champ_pk_hf',):
         if preferred in allowed:
             return preferred
-    # На случай если прежнего «дефолтного» плагина (primorye_hf) больше нет —
-    # берём любой доступный (детерминированно, сортировкой).
     return sorted(allowed)[0] if allowed else ''
 
 
@@ -82,24 +79,6 @@ def _excel_safe(value):
     if isinstance(value, str) and value.startswith(('=', '+', '-', '@')):
         return "'" + value
     return value
-
-def get_grouped_results(comp):
-    """Группирует отчеты участников по категориям для вывода и экспорта.
-    Учитывает только официальные (последние) отчеты — дубли не считаются."""
-    categories = get_categories_list(comp.categories)
-    grouped = defaultdict(list)
-
-    logs = get_official_logs(comp.id)
-    logs.sort(key=lambda lg: (lg.score or 0, lg.confirmed_qsos or 0), reverse=True)
-
-    for cat in categories:
-        grouped[cat] = []
-        
-    for log in logs:
-        cat = log.category if log.category in grouped else (log.category or 'Без категории')
-        grouped[cat].append(log)
-        
-    return dict(grouped)
 
 def generate_ubn_text(log, comp):
     """Формирует UBN-протокол для участника в стиле QSO Tournament Studio"""
@@ -225,7 +204,9 @@ def logout():
 @permission_required('competitions.view')
 def index():
     competitions = Competition.query.order_by(Competition.start_time.desc()).all()
-    return render_template('admin_index.html', competitions=competitions)
+    judging_running = any(c.judging_status == 'running' for c in competitions)
+    return render_template('admin_index.html', competitions=competitions,
+                           judging_running=judging_running)
 
 def _valid_dt_local(value):
     """Проверка формата datetime-local (YYYY-MM-DDTHH:MM) — защита от записи
@@ -239,16 +220,36 @@ def _valid_dt_local(value):
         return False
 
 
-def _parse_competition_form():
+def _form_timezone(form):
+    """Определяет выбранную тайм-зону соревнования (V-10):
+    'time_mode' == 'UTC' -> всегда UTC; иначе проверенный выбор из списка."""
+    mode = form.get('time_mode')
+    if mode == 'UTC':
+        return 'UTC'
+    tz_name = (form.get('comp_timezone') or 'UTC').strip()
+    for tz_id, _label in TIMEZONE_LIST:
+        if tz_id == tz_name:
+            return tz_id
+    return 'UTC'
+
+
+def _parse_competition_form(tz_name='UTC'):
     """Разбор полей формы создания/редактирования соревнования.
     Диапазоны и виды модуляции задаются отдельно для КАЖДОЙ зачетной группы:
-    поля cat_bands_<i>[] / cat_modes_<i>[] соответствуют категории с индексом i."""
+    поля cat_bands_<i>[] / cat_modes_<i>[] соответствуют категории с индексом i.
+    Времена сеансов переводятся из выбранной зоны в UTC (V-10).
+    При слишком длинном названии группы бросает ValueError."""
     raw_names = request.form.getlist('categories[]')
     categories_list = []
     for i, name in enumerate(raw_names):
         name = name.strip()
         if not name:
             continue
+        if len(name) > CATEGORY_MAX_LENGTH:
+            raise ValueError(
+                f'Название зачетной группы не должно превышать {CATEGORY_MAX_LENGTH} '
+                f'символов: "{name[:40]}..."'
+            )
         bands_list = [b.strip() for b in request.form.getlist(f'cat_bands_{i}[]') if isinstance(b, str) and b.strip()]
         modes_list = [m.strip() for m in request.form.getlist(f'cat_modes_{i}[]') if isinstance(m, str) and m.strip()]
         categories_list.append({
@@ -267,8 +268,8 @@ def _parse_competition_form():
         if s and e and db_type in ('none', 'duration', 'count') \
                 and _valid_dt_local(s) and _valid_dt_local(e):
             tours_list.append({
-                'start': s,
-                'end': e,
+                'start': parse_local_dt_input(s, tz_name).strftime('%Y-%m-%dT%H:%M'),
+                'end': parse_local_dt_input(e, tz_name).strftime('%Y-%m-%dT%H:%M'),
                 'divide_by': db_type,
                 'divide_value': int(db_val) if db_val and db_val.isdigit() else 0
             })
@@ -282,52 +283,85 @@ def _parse_competition_form():
 @permission_required('competitions.create')
 def add_competition():
     if request.method == 'POST':
-        data = _parse_competition_form()
+        tz_name = _form_timezone(request.form)
+        try:
+            data = _parse_competition_form(tz_name)
+            start_time = parse_local_dt_input(request.form.get('start_time'), tz_name)
+            end_time = parse_local_dt_input(request.form.get('end_time'), tz_name)
+            deadline_time = parse_local_dt_input(request.form.get('deadline_time'), tz_name)
+        except ValueError as e:
+            flash(f'Ошибка в данных соревнования: {e}', 'danger')
+            return redirect(url_for('admin.add_competition'))
 
         new_comp = Competition(
             name=request.form.get('name'),
-            start_time=datetime.strptime(request.form.get('start_time'), '%Y-%m-%dT%H:%M'),
-            end_time=datetime.strptime(request.form.get('end_time'), '%Y-%m-%dT%H:%M'),
-            deadline_time=datetime.strptime(request.form.get('deadline_time'), '%Y-%m-%dT%H:%M'),
+            start_time=start_time,
+            end_time=end_time,
+            deadline_time=deadline_time,
             time_delta_allowed=request.form.get('time_delta', type=int, default=3),
             scoring_script_filename=_validate_plugin(request.form.get('scoring_script_filename', 'champ_pk_hf')),
+            timezone=tz_name,
             categories=json.dumps(data['categories'], ensure_ascii=False),
             tours=json.dumps(data['tours'], ensure_ascii=False)
         )
         db.session.add(new_comp)
         db.session.commit()
         return redirect(url_for('admin.index'))
-        
+
     plugins = get_available_plugins()
     return render_template('admin_edit.html', comp=None, categories_list=[], plugins=plugins,
-                           tours_data=[])
+                           tours_data=[], timezone_list=TIMEZONE_LIST,
+                           start_display='', end_display='', deadline_display='',
+                           comp_timezone='UTC')
 
 @admin_bp.route('/edit/<int:comp_id>', methods=['GET', 'POST'])
 @permission_required('competitions.edit')
 def edit_competition(comp_id):
     comp = Competition.query.get_or_404(comp_id)
-    
+
     if request.method == 'POST':
-        data = _parse_competition_form()
-        
+        tz_name = _form_timezone(request.form)
+        try:
+            data = _parse_competition_form(tz_name)
+            start_time = parse_local_dt_input(request.form.get('start_time'), tz_name)
+            end_time = parse_local_dt_input(request.form.get('end_time'), tz_name)
+            deadline_time = parse_local_dt_input(request.form.get('deadline_time'), tz_name)
+        except ValueError as e:
+            flash(f'Ошибка в данных соревнования: {e}', 'danger')
+            return redirect(url_for('admin.edit_competition', comp_id=comp.id))
+
         comp.name = request.form.get('name')
-        comp.start_time = datetime.strptime(request.form.get('start_time'), '%Y-%m-%dT%H:%M')
-        comp.end_time = datetime.strptime(request.form.get('end_time'), '%Y-%m-%dT%H:%M')
-        comp.deadline_time = datetime.strptime(request.form.get('deadline_time'), '%Y-%m-%dT%H:%M')
+        comp.start_time = start_time
+        comp.end_time = end_time
+        comp.deadline_time = deadline_time
         comp.time_delta_allowed = request.form.get('time_delta', type=int, default=3)
         comp.scoring_script_filename = _validate_plugin(request.form.get('scoring_script_filename', 'champ_pk_hf'))
-        
+        comp.timezone = tz_name
+
         comp.categories = json.dumps(data['categories'], ensure_ascii=False)
         comp.tours = json.dumps(data['tours'], ensure_ascii=False)
-        
+
         db.session.commit()
         return redirect(url_for('admin.index'))
-        
+
+    tz_name = (comp.timezone or 'UTC')
     categories_list = parse_categories(comp.categories)
     plugins = get_available_plugins()
-    tours_data = json.loads(comp.tours) if comp.tours else []
-    return render_template('admin_edit.html', comp=comp, categories_list=categories_list, plugins=plugins,
-                           tours_data=tours_data)
+    tours_raw = json.loads(comp.tours) if comp.tours else []
+    tours_data = [
+        {
+            **t,
+            'start': utc_to_zone_str(t.get('start', ''), tz_name),
+            'end': utc_to_zone_str(t.get('end', ''), tz_name),
+        }
+        for t in tours_raw if isinstance(t, dict)
+    ]
+    return render_template('admin_edit.html', comp=comp, categories_list=categories_list,
+                           plugins=plugins, tours_data=tours_data, timezone_list=TIMEZONE_LIST,
+                           start_display=dt_for_edit_form(comp.start_time, tz_name),
+                           end_display=dt_for_edit_form(comp.end_time, tz_name),
+                           deadline_display=dt_for_edit_form(comp.deadline_time, tz_name),
+                           comp_timezone=comp.timezone or 'UTC')
 
 @admin_bp.route('/delete/<int:comp_id>', methods=['POST'])
 @permission_required('competitions.delete')
@@ -443,25 +477,12 @@ def missing_participants(comp_id):
 @permission_required('competitions.judge')
 def judge_competition(comp_id):
     comp = Competition.query.get_or_404(comp_id)
-    script_name = _validate_plugin(comp.scoring_script_filename)
-    
-    try:
-        module = importlib.import_module(f'app.judging.{script_name}')
-        
-        if hasattr(module, 'run_judging'):
-            module.run_judging(comp.id)
-        elif hasattr(module, f'run_judging_{script_name}'):
-            getattr(module, f'run_judging_{script_name}')(comp.id)
-        else:
-            flash(f'Ошибка: В плагине {script_name} не найдена функция run_judging(comp_id)', 'danger')
-            return redirect(url_for('admin.index'))
-            
-        comp.is_judged = True
-        db.session.commit()
-        flash(f'Судейство соревнований "{comp.name}" успешно выполнено!', 'success')
-    except Exception as e:
-        flash(f'Ошибка при выполнении судейства плагином {script_name}: {str(e)}', 'danger')
-        
+    ok, error = start_judging(comp.id)
+    if ok:
+        flash(f'Судейство соревнования "{comp.name}" запущено в фоне. '
+              'Страница результатов обновится после завершения.', 'success')
+    else:
+        flash(error or 'Не удалось запустить судейство.', 'danger')
     return redirect(url_for('admin.index'))
 
 @admin_bp.route('/download_ubn/<int:comp_id>')
@@ -510,12 +531,26 @@ def export_excel(comp_id):
     header_fill = PatternFill(start_color="D3D3D3", end_color="D3D3D3", fill_type="solid")
     center_aligned_text = Alignment(horizontal="center", vertical="center")
 
+    # Уникальные, валидные имена листов Excel (макс. 31 символ, запрещены \ / ? * [ ] :)
+    used_sheet_names = set()
+
+    def _unique_sheet_name(base):
+        sanitized = "".join('-' if ch in '\\/?*[]:' else ch for ch in base).strip() or 'Категория'
+        name = sanitized[:31]
+        candidate = name
+        n = 2
+        while candidate in used_sheet_names:
+            suffix = f" ({n})"
+            candidate = name[:31 - len(suffix)] + suffix
+            n += 1
+        used_sheet_names.add(candidate)
+        return candidate
+
     for category, logs in grouped_results.items():
         if not logs:
             continue
             
-        safe_title = str(category)[:31].replace("/", "-").replace("\\", "-")
-        ws = wb.create_sheet(title=safe_title)
+        ws = wb.create_sheet(title=_unique_sheet_name(str(category)))
         
         headers = [
             "Место", "Позывной", "ФИО", "Год рождения", "Разряд", "Субъект РФ",

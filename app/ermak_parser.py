@@ -1,5 +1,6 @@
 import re
-from datetime import datetime
+
+from app.qso_parser import parse_qso_line
 
 # Карта замены визуально одинаковых кириллических букв на латинские
 HOMOGLYPHS = {
@@ -106,7 +107,7 @@ _KNOWN_HEADER_KEYS = frozenset({
     'CLAIMED-SCORE', 'CREATED-BY', 'QSO'
 })
 
-def parse_ermak(file_content, comp_start=None, comp_end=None, plugin_title=None):
+def parse_ermak(file_content, comp_start=None, comp_end=None, plugin_title=None, exchange_spec=None):
     if hasattr(file_content, 'read'):
         file_content = file_content.read()
 
@@ -185,71 +186,59 @@ def parse_ermak(file_content, comp_start=None, comp_end=None, plugin_title=None)
 
         elif line_str.upper().startswith('QSO:'):
             tokens = line_str.split()
-            if len(tokens) >= 8:
-                freq = tokens[1]
-                mode = tokens[2].upper()
-                date_str = tokens[3]
-                time_str = tokens[4]
-                my_call = tokens[5].upper()
+            parsed = parse_qso_line(tokens, exchange_spec=exchange_spec)
+            if parsed is None:
+                continue
 
-                if len(tokens) >= 11:
-                    his_call = tokens[-3].upper()
-                    rst_s = tokens[6]
-                    exch_s = tokens[7]
-                    rst_r = tokens[-2]
-                    exch_r = tokens[-1]
-                elif len(tokens) == 10:
-                    his_call = tokens[-3].upper()
-                    rst_s = tokens[6]
-                    exch_s = tokens[7]
-                    rst_r = "59"
-                    exch_r = tokens[-1]
-                else:
-                    his_call = tokens[-2].upper() if len(tokens) == 9 else tokens[7].upper()
-                    rst_s = "59"
-                    exch_s = tokens[6] if len(tokens) > 6 else ""
-                    rst_r = "59"
-                    exch_r = tokens[-1]
+            freq = parsed['freq']
+            mode = parsed['mode_raw'].upper()
+            date_str = parsed['date']
+            time_str = parsed['time']
+            my_call = parsed['my_call']
+            his_call = parsed['his_call']
+            rst_s = parsed['rst_s']
+            exch_s = parsed['exch_s']
+            rst_r = parsed['rst_r']
+            exch_r = parsed['exch_r']
 
-                if mode in ['SSB', 'FM', 'AM']:
-                    mode_display = 'PH'
-                elif mode == 'CW':
-                    mode_display = 'CW'
-                else:
-                    mode_display = mode
+            if mode in ['SSB', 'FM', 'AM']:
+                mode_display = 'PH'
+            elif mode == 'CW':
+                mode_display = 'CW'
+            else:
+                mode_display = mode
 
-                status_info = {'is_error': False, 'text': '1'}
+            status_info = {'is_error': False, 'text': 'OK'}
+            if parsed['dt'] is None:
+                status_info = {'is_error': True, 'text': 'Invalid Date/Time format'}
+            elif comp_start and comp_end and not (comp_start <= parsed['dt'] <= comp_end):
+                status_info = {'is_error': True, 'text': 'Out of competition time'}
 
-                try:
-                    dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H%M")
-                    if comp_start and comp_end and not (comp_start <= dt <= comp_end):
-                        status_info = {'is_error': True, 'text': 'Out of competition time'}
-                except ValueError:
-                    status_info = {'is_error': True, 'text': 'Invalid Date/Time format'}
+            qsos.append({
+                'freq': freq,
+                'band': freq_to_band(freq),
+                'mode': mode_display,
+                'date': date_str,
+                'time': time_str,
+                'my_call': my_call,
+                'his_call': his_call,
 
-                qsos.append({
-                    'freq': freq,
-                    'band': freq_to_band(freq),
-                    'mode': mode_display,
-                    'date': date_str,
-                    'time': time_str,
-                    'my_call': my_call,
-                    'his_call': his_call,
-                    
-                    'my_rst': rst_s,
-                    'my_exch': exch_s,
-                    'his_rst': rst_r,
-                    'his_exch': exch_r,
-                    
-                    'rst_s': rst_s,
-                    'exch_s': exch_s,
-                    'rst_r': rst_r,
-                    'exch_r': exch_r,
-                    
-                    'points': 1, 
-                    'status_info': status_info,
-                    'raw_line': line_str
-                })
+                'my_rst': rst_s,
+                'my_exch': exch_s,
+                'his_rst': rst_r,
+                'his_exch': exch_r,
+
+                'rst_s': rst_s,
+                'exch_s': exch_s,
+                'rst_r': rst_r,
+                'exch_r': exch_r,
+
+                'points': 1,
+                'status_info': status_info,
+                'format_errors': parsed['format_errors'],
+                'has_critical_format': parsed['has_critical_format'],
+                'raw_line': line_str
+            })
 
     # Автозаполнение CONTEST из названия соревнования (PLUGIN_TITLE выбранного плагина),
     # если в отчете поле не указано или пустое.
