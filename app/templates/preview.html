@@ -78,7 +78,7 @@
         <div class="info-card">
             <h3>Параметры отчета</h3>
             <p><strong>Заявленный позывной:</strong> {{ headers.get('CALLSIGN', 'Не указан') }}</p>
-            <p><strong>Загружено связей:</strong> {{ qsos|length }}</p>
+            <p><strong>Загружено связей:</strong> {{ qsos_total }}</p>
         </div>
 
         <!-- Отдельный блок для LOCATION -->
@@ -205,7 +205,15 @@
         </div>
 
         <!-- Таблица связей -->
-        <h3>Загруженные радиосвязи ({{ qsos|length }})</h3>
+        <h3>Загруженные радиосвязи ({{ qsos_total }})
+            {%- if qsos_limited %} — показаны первые 1000{% endif %}</h3>
+        {% if qsos_limited %}
+        <div class="warning-box" style="border-left: 5px solid #ffc107;">
+        <strong>Внимание:</strong> в превью показаны первые 1000 связей,
+            в файле отчёта их {{ qsos_total }}. Судейство выполняется по полной серверной копии отчёта,
+            фактически все связи будут обработаны.
+        </div>
+        {% endif %}
         {% if qsos %}
             <div class="table-container">
             <table>

@@ -9,8 +9,8 @@ from datetime import datetime
 from collections import defaultdict
 from flask import Blueprint, render_template, request, redirect, url_for, session, flash, current_app, send_file, abort
 from app.models import db, User, Permission, UserPermission, Competition, ReceivedLog, QSO, Operator
-from app.auth import permission_required, get_current_user
-from app import limiter
+from app.auth import permission_required, get_current_user, generate_session_token, hash_session_token
+from app import limiter, _client_ip
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 from app.utils import get_official_logs, get_categories_list, parse_categories, category_rules_map, out_of_category_reason
@@ -52,6 +52,35 @@ def get_available_plugins():
                     'title': title
                 })
     return plugins
+
+
+def _validate_plugin(script_name, fallback_seed='primorye_hf'):
+    """Белый список плагинов судейства (F3): допускается только имя файла,
+    реально существующего в app/judging/. При недопустимом имени выбирается
+    реально доступный плагин (сначала похожий на script/fallback_seed)."""
+    allowed = {p['id'] for p in get_available_plugins()}
+    if script_name in allowed:
+        return script_name
+    current_app.logger.warning(
+        "Неизвестное имя плагина судейства '%s' подменено на доступный плагин",
+        script_name,
+    )
+    if fallback_seed in allowed:
+        return fallback_seed
+    for preferred in ('judging',):
+        if preferred in allowed:
+            return preferred
+    # На случай если прежнего «дефолтного» плагина (primorye_hf) больше нет —
+    # берём любой доступный (детерминированно, сортировкой).
+    return sorted(allowed)[0] if allowed else ''
+
+
+def _excel_safe(value):
+    """Нейтрализация formula injection (F1, CWE-1236): значение, начинающееся
+    с '=', '+', '-', '@', не должно интерпретироваться Excel как формула."""
+    if isinstance(value, str) and value.startswith(('=', '+', '-', '@')):
+        return "'" + value
+    return value
 
 def get_grouped_results(comp):
     """Группирует отчеты участников по категориям для вывода и экспорта.
@@ -137,11 +166,24 @@ def generate_ubn_text(log, comp):
     lines.append("-" * 85)
     return "\n".join(lines)
 
+def _login_bucket_key():
+    """Ключ для rate limit логина: IP + логин. Распределённый брутфорс одного
+    логина с разных IP всё равно упрётся в лимит по данной паре (F4)."""
+    username = (request.form.get('username') or '').strip().lower()
+    return f"{_client_ip()}|{username or '?'}"
+
+
+def _invalidate_sessions(user):
+    """Аннулирует все активные сессии пользователя (F8)."""
+    user.session_token_hash = None
+
+
 # ---------------------------------------------------------------------------
 # Аутентификация
 # ---------------------------------------------------------------------------
 @admin_bp.route('/login', methods=['GET', 'POST'])
 @limiter.limit("5 per 15 minutes", methods=["POST"])
+@limiter.limit("8 per 15 minutes", key_func=_login_bucket_key, methods=["POST"])
 def login():
     if request.method == 'POST':
         username = (request.form.get('username') or '').strip()
@@ -158,8 +200,11 @@ def login():
         else:
             # session.clear() до установки данных — защита от фиксации сессии
             session.clear()
+            auth_token = generate_session_token()
+            user.session_token_hash = hash_session_token(auth_token)
             session['user_id'] = user.id
             session['username'] = user.username
+            session['auth_token'] = auth_token
             user.last_login_at = datetime.now()
             db.session.commit()
             flash('Успешный вход!', 'success')
@@ -180,6 +225,18 @@ def logout():
 def index():
     competitions = Competition.query.order_by(Competition.start_time.desc()).all()
     return render_template('admin_index.html', competitions=competitions)
+
+def _valid_dt_local(value):
+    """Проверка формата datetime-local (YYYY-MM-DDTHH:MM) — защита от записи
+    произвольных строк в JSON туров (F2, self-XSS в admin_edit.html)."""
+    if not value or not isinstance(value, str):
+        return False
+    try:
+        datetime.strptime(value, '%Y-%m-%dT%H:%M')
+        return True
+    except ValueError:
+        return False
+
 
 def _parse_competition_form():
     """Разбор полей формы создания/редактирования соревнования.
@@ -206,7 +263,8 @@ def _parse_competition_form():
 
     tours_list = []
     for s, e, db_type, db_val in zip(block_starts, block_ends, divide_bys, divide_values):
-        if s and e and db_type in ('none', 'duration', 'count'):
+        if s and e and db_type in ('none', 'duration', 'count') \
+                and _valid_dt_local(s) and _valid_dt_local(e):
             tours_list.append({
                 'start': s,
                 'end': e,
@@ -231,7 +289,7 @@ def add_competition():
             end_time=datetime.strptime(request.form.get('end_time'), '%Y-%m-%dT%H:%M'),
             deadline_time=datetime.strptime(request.form.get('deadline_time'), '%Y-%m-%dT%H:%M'),
             time_delta_allowed=request.form.get('time_delta', type=int, default=3),
-            scoring_script_filename=request.form.get('scoring_script_filename', 'primorye_hf'),
+            scoring_script_filename=_validate_plugin(request.form.get('scoring_script_filename', 'primorye_hf')),
             categories=json.dumps(data['categories'], ensure_ascii=False),
             tours=json.dumps(data['tours'], ensure_ascii=False)
         )
@@ -256,7 +314,7 @@ def edit_competition(comp_id):
         comp.end_time = datetime.strptime(request.form.get('end_time'), '%Y-%m-%dT%H:%M')
         comp.deadline_time = datetime.strptime(request.form.get('deadline_time'), '%Y-%m-%dT%H:%M')
         comp.time_delta_allowed = request.form.get('time_delta', type=int, default=3)
-        comp.scoring_script_filename = request.form.get('scoring_script_filename', 'primorye_hf')
+        comp.scoring_script_filename = _validate_plugin(request.form.get('scoring_script_filename', 'primorye_hf'))
         
         comp.categories = json.dumps(data['categories'], ensure_ascii=False)
         comp.tours = json.dumps(data['tours'], ensure_ascii=False)
@@ -351,11 +409,40 @@ def participants(comp_id):
     logs.sort(key=lambda lg: (lg.callsign or '').upper())
     return render_template('admin_participants.html', comp=comp, logs=logs)
 
+@admin_bp.route('/missing/<int:comp_id>')
+@permission_required('competitions.logs')
+def missing_participants(comp_id):
+    """Отсутствующие: корреспонденты, которых упоминали в отчетах, но сами отчет не прислали.
+    Первый столбец — позывной, второй — в скольких официальных отчетах он упоминается."""
+    comp = Competition.query.get_or_404(comp_id)
+    official_logs = get_official_logs(comp.id)
+    submitted = {log.callsign.strip().upper() for log in official_logs if log.callsign}
+    official_log_ids = {log.id for log in official_logs}
+
+    if not official_log_ids:
+        return render_template('admin_missing.html', comp=comp, missing=[])
+
+    rows = QSO.query.filter(
+        QSO.competition_id == comp.id,
+        QSO.log_id.in_(official_log_ids),
+    ).all()
+
+    mentions = defaultdict(set)
+    for q in rows:
+        call = (q.corr_call or '').strip().upper()
+        if not call or call in submitted:
+            continue
+        mentions[call].add(q.log_id)
+
+    missing = sorted(((call, len(log_ids)) for call, log_ids in mentions.items()),
+                     key=lambda x: (-x[1], x[0]))
+    return render_template('admin_missing.html', comp=comp, missing=missing)
+
 @admin_bp.route('/judge/<int:comp_id>', methods=['POST'])
 @permission_required('competitions.judge')
 def judge_competition(comp_id):
     comp = Competition.query.get_or_404(comp_id)
-    script_name = comp.scoring_script_filename
+    script_name = _validate_plugin(comp.scoring_script_filename)
     
     try:
         module = importlib.import_module(f'app.judging.{script_name}')
@@ -453,11 +540,11 @@ def export_excel(comp_id):
 
             row = [
                 index,
-                log.callsign,
-                fios,
-                dobs,
-                ranks,
-                log.location or '-',
+                _excel_safe(log.callsign),
+                _excel_safe(fios),
+                _excel_safe(dobs),
+                _excel_safe(ranks),
+                _excel_safe(log.location or '-'),
                 claimed,
                 log.claimed_qso_points or 0,
                 log.claimed_mult or 0,
@@ -660,6 +747,7 @@ def user_edit(user_id):
 
         if password:
             target.password_hash = generate_password_hash(password)
+            _invalidate_sessions(target)
             changes.append('пароль')
 
         # Активность можно менять, только если это не лишает систему
@@ -672,6 +760,7 @@ def user_edit(user_id):
                     flash(guard, 'danger')
                 else:
                     target.is_active = False
+                    _invalidate_sessions(target)
                     changes.append('деактивация')
             else:
                 target.is_active = True

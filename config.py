@@ -14,6 +14,9 @@ class Config:
     SESSION_COOKIE_SECURE = os.environ.get('SESSION_COOKIE_SECURE', '1') == '1'
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = 'Lax'
+    # __Host-префикс (требует Secure, Path=/, без Domain) — защита от
+    # перехвата cookie через поддомен/не-тёмный путь. Действует только по HTTPS.
+    SESSION_COOKIE_NAME = os.environ.get('SESSION_COOKIE_NAME', '__Host-session')
 
     # Добавлен timeout=20 для избежания ошибки "database is locked" при конкурентных запросах
     SQLALCHEMY_DATABASE_URI = 'sqlite:///' + os.path.join(BASE_DIR, 'data', 'judging.db') + '?timeout=20'
@@ -33,6 +36,10 @@ class Config:
     SCRIPTS_FOLDER = os.path.join(BASE_DIR, 'data', 'scripts')
     MAX_CONTENT_LENGTH = 5 * 1024 * 1024  # Ограничение 5 МБ на файл
 
+    # Хранилище счётчиков rate limit. По умолчанию in-memory (на воркер);
+    # для production рекомендуется общий redis: RATELIMIT_STORAGE_URI=redis://...
+    RATELIMIT_STORAGE_URI = os.environ.get('RATELIMIT_STORAGE_URI', 'memory://')
+
 
 class DevConfig(Config):
     # Локальная разработка: python run.py (dev-сервер работает по HTTP,
@@ -40,3 +47,5 @@ class DevConfig(Config):
     # по умолчанию, если переменная окружения не задана.
     SECRET_KEY = os.environ.get('SECRET_KEY', 'dev-secret-key-not-for-production')
     SESSION_COOKIE_SECURE = False
+    # __Host-префикс несовместим с HTTP (требует Secure), оставляем имя по умолчанию.
+    SESSION_COOKIE_NAME = 'session'

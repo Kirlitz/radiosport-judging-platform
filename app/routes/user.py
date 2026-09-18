@@ -19,6 +19,10 @@ PENDING_TTL = timedelta(minutes=30)
 # Максимальная длина названия зачетной группы (должна совпадать с admin_edit.html)
 CATEGORY_MAX_LENGTH = 110
 
+# Максимум связей, показываемых в превью (защита от DoS гигантскими отчетами).
+# Итоговое судейство всегда идет по серверной копии отчета, а не по превью.
+PREVIEW_MAX_QSO = 1000
+
 # Проверка формата e-mail (строгая): имя@домен.зона
 EMAIL_RE = re.compile(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
 
@@ -46,6 +50,7 @@ def sanitize_text(text, max_length=100):
     return clean_text.strip()[:max_length]
 
 @user_bp.route('/')
+@limiter.limit("120 per minute")
 def index():
     competitions = Competition.query.all()
     logs_by_comp = {}
@@ -109,6 +114,8 @@ def upload_log():
 
     db.session.commit()
 
+    qsos_total = len(qsos)
+
     return render_template('preview.html',
                            contest=comp,
                            contest_plugin_title=plugin_title,
@@ -119,7 +126,9 @@ def upload_log():
                            categories=categories,
                            headers=headers,
                            operators=operators,
-                           qsos=qsos)
+                           qsos=qsos[:PREVIEW_MAX_QSO],
+                           qsos_total=qsos_total,
+                           qsos_limited=qsos_total > PREVIEW_MAX_QSO)
 
 @user_bp.route('/confirm', methods=['POST'])
 @limiter.limit("15 per minute") # Ограничение на подтверждение формы

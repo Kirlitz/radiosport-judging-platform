@@ -115,6 +115,7 @@
                         {% if current_user and (current_user.is_superuser or current_user.has_permission('competitions.logs')) %}
                             <a href="{{ url_for('admin.logs_list', comp_id=comp.id) }}" class="btn btn-primary">Отчеты</a>
                             <a href="{{ url_for('admin.participants', comp_id=comp.id) }}" class="btn btn-info">Участники</a>
+                            <a href="{{ url_for('admin.missing_participants', comp_id=comp.id) }}" class="btn btn-secondary">Отсутствующие</a>
                         {% endif %}
 
                         {% if current_user and (current_user.is_superuser or current_user.has_permission('competitions.edit')) %}

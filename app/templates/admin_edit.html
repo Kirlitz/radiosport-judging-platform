@@ -196,9 +196,21 @@
             }
         }
 
+        function escHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/"/g, '&quot;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+        }
+
         function addTourRow(start = "", end = "", divideBy = "none", divideVal = "") {
             if (!start) start = document.getElementById("comp_start").value;
             if (!end) end = document.getElementById("comp_end").value;
+            start = escHtml(start);
+            end = escHtml(end);
+            divideVal = escHtml(divideVal);
+            divideBy = escHtml(divideBy);
 
             const container = document.getElementById("tours-container");
             const row = document.createElement("div");

@@ -60,8 +60,8 @@ def create_app(config_class=Config):
     csrf = CSRFProtect(app)
 
     # Rate limiting (защита от брутфорса /admin/login)
-    # Хранилище счётчиков — in-memory (на воркер); при необходимости — redis через RATELIMIT_STORAGE_URI
-    app.config["RATELIMIT_STORAGE_URI"] = "memory://"
+    # Хранилище счётчиков — in-memory (на воркер); для production можно задать
+    # RATELIMIT_STORAGE_URI=redis://... в переменной окружения (F5)
     limiter.init_app(app)
 
     @app.errorhandler(429)
@@ -84,6 +84,20 @@ def create_app(config_class=Config):
         response.headers.setdefault('X-Content-Type-Options', 'nosniff')
         response.headers.setdefault('X-Frame-Options', 'DENY')
         response.headers.setdefault('Referrer-Policy', 'same-origin')
+        response.headers.setdefault(
+            'Content-Security-Policy',
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "img-src 'self' data:; font-src 'self' https://cdn.jsdelivr.net; "
+            "connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+        )
+        response.headers.setdefault(
+            'Permissions-Policy', 'camera=(), geolocation=(), microphone=()'
+        )
+        if app.config.get('SESSION_COOKIE_SECURE'):
+            response.headers.setdefault(
+                'Strict-Transport-Security', 'max-age=31536000; includeSubDomains'
+            )
         return response
 
     # Доступ в шаблонах к текущему пользователю (для показа ссылок и кнопок
@@ -112,9 +126,30 @@ def create_app(config_class=Config):
     # в judging.db, пользователи (User/Permission/UserPermission) — в users.db.
     with app.app_context():
         db.create_all()
+        _ensure_session_token_column(app)
         seed_users_db(app)
 
     return app
+
+
+def _ensure_session_token_column(app):
+    """Одноразовая миграция: добавляет колонку session_token_hash в users.db.
+
+    create_all() не добавляет колонки в существующую таблицу, поэтому при
+    обновлении снизу-вверх выполняем ALTER TABLE (идемпотентно).
+    """
+    from sqlalchemy import inspect, text
+    try:
+        bind = db.get_engine(app, bind='users')
+        inspector = inspect(bind)
+        if 'user' not in inspector.get_table_names():
+            return
+        columns = {c['name'] for c in inspector.get_columns('user')}
+        if 'session_token_hash' not in columns:
+            with bind.begin() as conn:
+                conn.execute(text('ALTER TABLE "user" ADD COLUMN session_token_hash VARCHAR(64)'))
+    except Exception:
+        app.logger.exception("Не удалось выполнить миграцию session_token_hash")
 
 
 def seed_users_db(app):

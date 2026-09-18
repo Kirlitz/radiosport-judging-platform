@@ -18,6 +18,10 @@ class User(db.Model):
     # ИЗМЕНЕНО: 255 символов для совместимости с современными алгоритмами (scrypt, pbkdf2)
     password_hash = db.Column(db.String(255), nullable=False)
 
+    # Хеш токена текущей сессии. Меняется при входе и при смене пароля/
+    # деактивации — старые сессии после этого аннулируются (F8).
+    session_token_hash = db.Column(db.String(64), nullable=True)
+
     # is_superuser — полные права без перечисления отдельных разрешений
     # (устанавливаются у записей admin и ua0lid)
     is_superuser = db.Column(db.Boolean, default=False, nullable=False)

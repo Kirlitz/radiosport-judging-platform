@@ -1,3 +1,6 @@
+import hashlib
+import hmac
+import secrets
 from functools import wraps
 
 from flask import g, session, redirect, url_for, flash, abort
@@ -30,6 +33,8 @@ def get_current_user():
 
     Кэшируется в flask.g на время запроса. Если аккаунт удален или
     заблокирован (is_active=False), считается неавторизованным.
+    Дополнительно сверяет токен сессии (auth_token) с хешем в БД:
+    при смене пароля/деактивации все старые сессии становятся недействительными.
     """
     if 'current_user' in g:
         return g.get('current_user')
@@ -37,8 +42,27 @@ def get_current_user():
     user = db.session.get(User, uid) if uid else None
     if user is None or not user.is_active:
         user = None
+    elif not verify_session_token(session.get('auth_token'), user.session_token_hash):
+        user = None
     g.current_user = user
     return user
+
+
+def generate_session_token():
+    """Новый случайный токен сессии (хранится в cookie сессии)."""
+    return secrets.token_urlsafe(32)
+
+
+def hash_session_token(token):
+    """Хеш токена для хранения в БД (не храним сам токен)."""
+    return hashlib.sha256(token.encode('utf-8')).hexdigest()
+
+
+def verify_session_token(token, token_hash):
+    """Проверка токена сессии против хеша из БД (constant-time сравнение)."""
+    if not token or not token_hash:
+        return False
+    return hmac.compare_digest(hash_session_token(token), token_hash)
 
 
 def seed_default_permissions():
