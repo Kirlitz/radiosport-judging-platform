@@ -30,6 +30,14 @@
     <h2>Предварительная проверка отчета</h2>
     <p><strong>Соревнование:</strong> {{ contest.title or contest.name }}</p>
 
+    <!-- Информация о фактическом формате отчета (Ермак/Cabrillo) -->
+    {% if format_note %}
+        <div class="warning-box" style="border-left: 5px solid #ffc107;">
+            <h3>⚠️ Формат отчета: {{ report_format }}</h3>
+            <p>{{ format_note }}</p>
+        </div>
+    {% endif %}
+
     <!-- Предупреждение о временном окне приема отчетов -->
     {% if status_code == 'CHECKLOG_ONLY' %}
         <div class="warning-box" style="border-left: 5px solid #ffc107;">

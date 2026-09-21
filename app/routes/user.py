@@ -35,7 +35,10 @@ def sanitize_text(text, max_length=100):
     if not text:
         return ""
     # Вырезаем скобки (всех видов), кавычки, пайпы, точку с запятой, обратные слэши
-    clean_text = re.sub(r'[<>{}\[\]|;\'"\\]', '', text)
+    # и управляющие символы C0/0x7F. Управляющие (в т.ч. \n \r) иначе позволили бы
+    # инъекцию новых строк/полей в сохранённую копию отчёта через поля формы
+    # (например NAME: <имя> + перевод строки + поддельная строка QSO).
+    clean_text = re.sub(r'[\x00-\x1f\x7f<>{}\[\]|;\'"\\]', '', text)
     return clean_text.strip()[:max_length]
 
 @user_bp.route('/')
@@ -116,6 +119,18 @@ def upload_log():
 
     qsos_total = len(qsos)
 
+    # Фактический формат файла отчета (информация для участника и судьи).
+    # Прием отчета НЕ зависит от этого значения: Ермак и Cabrillo разбираются
+    # общим парсером, формат лишь фиксируется и при необходимости отмечается.
+    report_format = headers.get('REPORT_FORMAT', 'ERMAK')
+    format_note = None
+    if report_format == 'CABRILLO':
+        format_note = ('Отчет сформирован в формате Cabrillo, тогда как регламентом '
+                       'всероссийских соревнований обычно требуется формат ЕРМАК. '
+                       'Связи и данные шапки обработаны корректно, отчет принят, но '
+                       'судьи могут обратить внимание на несоответствие формата '
+                       'требованиям положения.')
+
     return render_template('preview.html',
                            contest=comp,
                            contest_plugin_title=plugin_title,
@@ -127,6 +142,8 @@ def upload_log():
                            categories=categories,
                            headers=headers,
                            operators=operators,
+                           report_format=report_format,
+                           format_note=format_note,
                            qsos=qsos[:PREVIEW_MAX_QSO],
                            qsos_total=qsos_total,
                            qsos_limited=qsos_total > PREVIEW_MAX_QSO)

@@ -37,65 +37,108 @@ def freq_to_band(freq_str):
     return str(freq_str).lower().strip()
 
 
+_SINGLE_DOB_RE = re.compile(r'^\d{1,2}[./-]\d{1,2}[./-]\d{2,4}$')
+_YEAR_RE = re.compile(r'^\d{4}$')
+_KNOWN_RANKS = {'МС', 'КМС', 'ЗМС', 'МСМК', 'Б/Р', 'БР', '1', '2', '3',
+                '1К', '2К', '3К', 'I', 'II', 'III'}
+
+def _is_callsign_like(token):
+    t = str(token).strip()
+    return bool(re.match(r'^[A-Z0-9/]{2,12}$', t) and re.search(r'[A-Z]', t))
+
+def _strip_sep(token):
+    return re.sub(r'^[,.;:\s]+|[,.;:\s]+$', '', str(token))
+
+
 def parse_operator_line(line_val):
+    """Разбор данных об операторе в формате Ермак/Cabrillo.
+
+    Поддерживает варианты:
+      Фамилия, Имя, Отчество, ГГГГ, разряд, позывной, категория   (Ермак)
+      Фамилия, Имя, Отчество, ДД.ММ.ГГГГ, разряд, позывной, категория  (Cabrillo/5MContest)
+      UA8AA UA8BA UA8AC @UA8XYZ                                 (список позывных)
+    Допускается отсутствие отдельных полей и завершающий идентификатор «Тренер».
+    Точка внутри даты НЕ разделяет поля, поэтому дата не разбивается на части.
+    """
     if not line_val or not str(line_val).strip():
         return None
-        
+
+    raw = str(line_val).strip()
     try:
-        tokens = [t.strip('.') for t in re.split(r'[\.,\s]+', str(line_val).strip()) if t.strip('.')]
+        tokens = [t for t in (_strip_sep(t) for t in re.split(r'[\s,]+', raw)) if t]
         if not tokens:
             return None
-            
+
         fio_parts = []
         dob = ""
         rank = ""
         callsign = ""
-        
+        category = ""
+        extra_calls = []
+        remainder = []
+
         dob_idx = -1
         for i, t in enumerate(tokens):
-            if re.match(r'^\d{1,2}[./-]\d{1,2}[./-]\d{2,4}$', t) or re.match(r'^\d{4}$', t):
+            if _SINGLE_DOB_RE.match(t) or _YEAR_RE.match(t):
                 dob_idx = i
                 break
-        
+
         if dob_idx != -1:
             fio_parts = tokens[:dob_idx]
             dob = tokens[dob_idx]
-            remaining = tokens[dob_idx+1:]
+            remainder = tokens[dob_idx + 1:]
         else:
-            stop_idx = len(tokens)
-            known_ranks = {'МС', 'КМС', 'ЗМС', 'Б/Р', 'БР', '1', '2', '3', 'МСМК', '1К', '2К', '3К'}
-            for i, t in enumerate(tokens):
-                if t.upper() in known_ranks or re.search(r'\d', t):
-                    stop_idx = i
-                    break
-            fio_parts = tokens[:stop_idx]
-            remaining = tokens[stop_idx:]
-            
-        fio = " ".join(fio_parts)
-        
-        if len(remaining) >= 2:
-            rank = remaining[0]
-            callsign = remaining[1]
-        elif len(remaining) == 1:
-            if re.search(r'[A-Za-z]', remaining[0]) and len(remaining[0]) >= 3:
-                callsign = remaining[0]
+            # Возможный список позывных операторов (формат 1 Ермака,
+            # например «UA8AA UA8BA UA8AC @UA8XYZ»). Токен @<позывной>
+            # обозначает подпозывной станции и оператором не является.
+            call_candidates = [t for t in tokens if not t.startswith('@')]
+            if call_candidates and all(_is_callsign_like(t) for t in call_candidates):
+                callsign = call_candidates[0]
+                extra_calls = call_candidates[1:]
             else:
-                rank = remaining[0]
-                
+                stop_idx = len(tokens)
+                for i, t in enumerate(tokens):
+                    if t.upper() in _KNOWN_RANKS or re.search(r'\d', t):
+                        stop_idx = i
+                        break
+                fio_parts = tokens[:stop_idx]
+                remainder = tokens[stop_idx:]
+
+        fio = " ".join(fio_parts)
+
+        if remainder:
+            if remainder[-1].lower() == 'тренер':
+                remainder = remainder[:-1]
+            if len(remainder) >= 1:
+                rank = remainder[0]
+            if len(remainder) >= 2:
+                callsign = remainder[1]
+            if len(remainder) > 2:
+                category = ", ".join(remainder[2:])
+
         return {
             'fio': fio, 'name': fio, 'full_name': fio, 'fio_operatora': fio,
             'dob': dob, 'birth_date': dob, 'birthdate': dob, 'date_of_birth': dob,
-            'rank': rank, 'sport_rank': rank, 'sport_category': rank, 'category': rank,
-            'callsign': callsign, 'call': callsign, 'personal_callsign': callsign
+            'birth_year': dob,
+            'rank': rank, 'sport_rank': rank, 'sport_category': rank, 'category': category,
+            'callsign': callsign, 'call': callsign, 'personal_callsign': callsign,
+            'extra_calls': extra_calls
         }
     except Exception:
         return {
-            'fio': line_val, 'name': line_val, 'full_name': line_val, 'fio_operatora': line_val,
+            'fio': raw, 'name': raw, 'full_name': raw, 'fio_operatora': raw,
             'dob': '', 'birth_date': '', 'birthdate': '', 'date_of_birth': '',
+            'birth_year': '',
             'rank': '', 'sport_rank': '', 'sport_category': '', 'category': '',
-            'callsign': '', 'call': '', 'personal_callsign': ''
+            'callsign': '', 'call': '', 'personal_callsign': '',
+            'extra_calls': []
         }
 
+
+# Максимум записей об операторах, отдаваемых в форму подтверждения.
+# Ограничивает раздувание списка из строки OPERATORS (списки позывных
+# «UA8AA UA8BA ..» и «;»-разделители) — защита от DoS-усиления.
+MAX_OPERATORS = 25
 
 # Ключевые слова шапки, для которых допускается запись без двоеточия
 # (например "LOCATION PK01" или "EMAIL user@mail.ru"). Ключ — нормализованный.
@@ -104,8 +147,31 @@ _KNOWN_HEADER_KEYS = frozenset({
     'CATEGORY-OPERATOR', 'CATEGORY-BAND', 'CATEGORY-MODE',
     'CATEGORY-ASSISTED', 'CATEGORY-POWER', 'LOCATION', 'NAME',
     'ADDRESS', 'EMAIL', 'CLUB', 'SOAPBOX', 'OPERATORS', 'OPERATOR',
-    'CLAIMED-SCORE', 'CREATED-BY', 'QSO'
+    'CLAIMED-SCORE', 'CREATED-BY', 'QSO',
+    'GRID-LOCATOR', 'ADDRESS-CITY', 'ADDRESS-POSTALCODE',
+    'ADDRESS-STATE-PROVINCE', 'ADDRESS-COUNTRY', 'COUNTRY'
 })
+
+# Поля, встречающиеся только в Cabrillo (нужны для опознания формата файла).
+_CABRILLO_ONLY_KEYS = (
+    'GRID-LOCATOR', 'ADDRESS-CITY', 'ADDRESS-POSTALCODE',
+    'ADDRESS-STATE-PROVINCE', 'ADDRESS-COUNTRY', 'COUNTRY'
+)
+
+
+def detect_report_format(headers):
+    """Ориентировочное определение «номинального» формата файла отчета.
+
+    Парсер не полагается на результат (оба формата разбираются вместе),
+    но значение сохраняется в шапку как информация для судейской коллегии.
+    """
+    cab = sum(1 for k in _CABRILLO_ONLY_KEYS if (headers.get(k) or '').strip())
+    created = (headers.get('CREATED-BY') or '').upper()
+    if cab >= 2 or (cab == 1 and '5MCONTEST' in created):
+        return 'CABRILLO'
+    if cab == 1:
+        return 'MIXED'
+    return 'ERMAK'
 
 def parse_ermak(file_content, comp_start=None, comp_end=None, plugin_title=None, exchange_spec=None):
     if hasattr(file_content, 'read'):
@@ -183,6 +249,20 @@ def parse_ermak(file_content, comp_start=None, comp_end=None, plugin_title=None,
                         op_data = parse_operator_line(op_segment)
                         if op_data:
                             operators.append(op_data)
+                            # Вариант «список позывных»: каждый позывной —
+                            # отдельная запись оператора.
+                            for extra_call in op_data.get('extra_calls', []):
+                                if len(operators) >= MAX_OPERATORS:
+                                    break
+                                operators.append({
+                                    'fio': '', 'name': '', 'full_name': '', 'fio_operatora': '',
+                                    'dob': '', 'birth_date': '', 'birthdate': '',
+                                    'date_of_birth': '', 'birth_year': '',
+                                    'rank': '', 'sport_rank': '', 'sport_category': '',
+                                    'category': '',
+                                    'callsign': extra_call, 'call': extra_call,
+                                    'personal_callsign': extra_call, 'extra_calls': []
+                                })
 
         elif line_str.upper().startswith('QSO:'):
             tokens = line_str.split()
@@ -240,10 +320,42 @@ def parse_ermak(file_content, comp_start=None, comp_end=None, plugin_title=None,
                 'raw_line': line_str
             })
 
+    # Ограничение размера списка операторов (защита от DoS-усиления
+    # через гигантские списки в строке OPERATORS).
+    if len(operators) > MAX_OPERATORS:
+        operators = operators[:MAX_OPERATORS]
+
+    # Сборка полного почтового адреса из блоков Cabrillo
+    # (ADDRESS + ADDRESS-CITY + ADDRESS-STATE-PROVINCE +
+    #  ADDRESS-POSTALCODE + ADDRESS-COUNTRY).
+    address_parts = [headers.get('ADDRESS')]
+    for sub in ('ADDRESS-CITY', 'ADDRESS-STATE-PROVINCE',
+                'ADDRESS-POSTALCODE', 'ADDRESS-COUNTRY'):
+        sub_val = headers.get(sub)
+        if sub_val and sub_val.strip():
+            address_parts.append(sub_val.strip(' ,'))
+    address_parts = [p.strip(' ,') for p in address_parts if p and p.strip()]
+    if address_parts:
+        headers['ADDRESS'] = ', '.join(address_parts)
+
+    # GRID-LOCATOR как запасной источник для LOCATION (Cabrillo-файлы).
+    if not (headers.get('LOCATION') or '').strip() and (headers.get('GRID-LOCATOR') or '').strip():
+        headers['LOCATION'] = headers['GRID-LOCATOR']
+
+    # Если NAME в шапке пуст (как в Cabrillo-отчетах 5MContest), подставляем
+    # ФИО первого оператора из OPERATORS — это требование формы подтверждения.
+    if not (headers.get('NAME') or '').strip():
+        for op in operators:
+            if op.get('fio'):
+                headers['NAME'] = op['fio']
+                break
+
     # Автозаполнение CONTEST из названия соревнования (PLUGIN_TITLE выбранного плагина),
     # если в отчете поле не указано или пустое.
     if plugin_title and not (headers.get('CONTEST') or '').strip():
         headers['CONTEST'] = plugin_title
+
+    headers['REPORT_FORMAT'] = detect_report_format(headers)
 
     for req in required_headers:
         if req not in headers:

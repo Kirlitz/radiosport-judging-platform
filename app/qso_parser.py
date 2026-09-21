@@ -55,11 +55,18 @@ def _align_exchange(fields, names, label):
         return dict(zip(names, fields)), errors
 
     if n > e:
-        # Лишние токены. Для Cabrillo — «хвост» после принятого номера (RT0O),
-        # для Ермака — блок локатора между обменами. Берём первые e полей
-        # (если первое похоже на RST) либо последние e.
-        if names and names[0] == 'rst' and e and RST_RE.match(str(fields[-e])):
-            take, extra = fields[-e:], fields[:-e]
+        # Лишние токены. Для Cabrillo — «хвост» после принятого номера
+        # (номер передатчика, RT0O), для Ермака — блок локатора в середине.
+        # Обмен всегда начинается с RST (первый токен), поэтому предпочитаем
+        # первые e полей; на последние e откатываемся только если RST стоит
+        # в конце (защита от нестандартных логгеров).
+        if names and names[0] == 'rst' and e:
+            if RST_RE.match(str(fields[0])):
+                take, extra = fields[:e], fields[e:]
+            elif RST_RE.match(str(fields[-e])):
+                take, extra = fields[-e:], fields[:-e]
+            else:
+                take, extra = fields[:e], fields[e:]
         else:
             take, extra = fields[:e], fields[e:]
         if extra:
@@ -110,11 +117,26 @@ def _align_exchange(fields, names, label):
 
 
 def _parse_datetime(date_str, time_str):
-    if len(time_str) == 4:
-        fmt = "%Y-%m-%d %H%M"
+    """Разбор даты/времени из строки QSO.
+
+    Дата: ISO (ГГГГ-ММ-ДД, Ермак/Cabrillo) или ДД.ММ.ГГГГ/ДД.ММ.ГГ.
+    Время: ЧЧММ, ЧЧ:ММ или ЧЧ:ММ:СС. Возвращает datetime (UTC).
+    """
+    if len(str(time_str)) == 4:
+        time_fmt = "%H%M"
+    elif len(str(time_str)) == 8 and ':' in str(time_str):
+        time_fmt = "%H:%M:%S"
     else:
-        fmt = "%Y-%m-%d %H:%M"
-    return datetime.strptime(f"{date_str} {time_str}", fmt)
+        time_fmt = "%H:%M"
+
+    date_fmts = ["%Y-%m-%d", "%d.%m.%Y", "%d.%m.%y", "%d/%m/%Y", "%d/%m/%y", "%m/%d/%Y"]
+    for date_fmt in date_fmts:
+        fmt = f"{date_fmt} {time_fmt}"
+        try:
+            return datetime.strptime(f"{date_str} {time_str}", fmt)
+        except ValueError:
+            continue
+    raise ValueError(f"Неверный формат даты/времени: {date_str} {time_str}")
 
 
 def parse_qso_line(tokens, exchange_spec=None):

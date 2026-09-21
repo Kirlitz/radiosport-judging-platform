@@ -4,6 +4,7 @@ import secrets
 from functools import wraps
 
 from flask import g, session, redirect, url_for, flash, abort
+from sqlalchemy.exc import IntegrityError
 
 from app.models import db, User, Permission
 
@@ -66,12 +67,20 @@ def verify_session_token(token, token_hash):
 
 
 def seed_default_permissions():
-    """Наполняет справочник прав данными по умолчанию (идемпотентно)."""
+    """Наполняет справочник прав данными по умолчанию (идемпотентно).
+
+    Безопасно при одновременном старте нескольких воркеров: если конкурирующий
+    процесс уже вставил те же коды, конфликт с UNIQUE constraint гасится
+    откатом транзакции, а не падением приложения.
+    """
     existing = {p.code for p in Permission.query.all()}
     for code, description in DEFAULT_PERMISSIONS:
         if code not in existing:
             db.session.add(Permission(code=code, description=description))
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
 
 
 def login_required(view):
